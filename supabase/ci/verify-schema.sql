@@ -163,6 +163,25 @@ BEGIN
     RAISE EXCEPTION 'anon can execute dashboard_overview — migration 059 grants are wrong';
   END IF;
 
+  -- 062: table privileges must not depend on project defaults.
+  IF EXISTS (
+    SELECT 1 FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND c.relname <> 'pending_message_statuses'
+      AND NOT has_table_privilege('authenticated', c.oid, 'SELECT')
+  ) THEN
+    RAISE EXCEPTION 'authenticated lacks SELECT on a public table — migration 062 did not apply';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.notifications', 'UPDATE')
+     OR NOT has_column_privilege('authenticated', 'public.notifications', 'read_at', 'UPDATE') THEN
+    RAISE EXCEPTION 'notifications must be client-writable on read_at only (027 / 062)';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.pending_message_statuses', 'SELECT') THEN
+    RAISE EXCEPTION 'pending_message_statuses must be service-role only (054 / 062)';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
