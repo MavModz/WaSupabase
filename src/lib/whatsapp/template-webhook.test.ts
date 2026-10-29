@@ -5,18 +5,27 @@ import {
   isTemplateWebhookField,
 } from './template-webhook';
 
-// Tiny mock that records the .update payload and the .eq filter for
-// inspection. Mirrors the surface this module actually uses on the
+// Tiny mock that records the .update payload and the .eq / .in filters
+// for inspection. Mirrors the surface this module actually uses on the
 // Supabase client — anything beyond throws, so unintended calls fail
 // loudly:
-//   message_templates: .update().eq().select()  → selectResult (then
+//   message_templates: .update().eq().in().select() → selectResult (then
 //                      retrySelectResult for the 2nd call, if given)
 //                      .insert()               → { error: insertError }
 //   whatsapp_config:   .select().eq()           → { data: configRows }
+//                      (defaults to one config on WABA-1)
 type SelectResult = {
   data: { id: string }[] | null;
   error: { message: string; code?: string } | null;
 };
+
+const WABA = 'WABA-1';
+const CONFIG = { account_id: 'acc-1', user_id: 'admin-1' };
+
+/** Only the message_templates calls (the whatsapp_config lookup comes first). */
+function templateCalls<T extends { table: string }>(calls: T[]): T[] {
+  return calls.filter((c) => c.table === 'message_templates');
+}
 
 function makeSupabaseStub(
   selectResult: SelectResult = { data: [{ id: 'row-1' }], error: null },
@@ -30,6 +39,7 @@ function makeSupabaseStub(
     table: string;
     update?: Record<string, unknown>;
     filter?: { column: string; value: unknown };
+    scope?: { column: string; values: unknown[] };
     insert?: Record<string, unknown>;
     select?: string;
   }[] = [];
@@ -47,7 +57,7 @@ function makeSupabaseStub(
               eq(column: string, value: unknown) {
                 entry.filter = { column, value };
                 return Promise.resolve({
-                  data: opts.configRows ?? [],
+                  data: opts.configRows ?? [CONFIG],
                   error: null,
                 });
               },
@@ -71,18 +81,13 @@ function makeSupabaseStub(
             eq(column: string, value: unknown) {
               entry.filter = { column, value };
               return {
-                select() {
-                  return Promise.resolve(result);
-                },
-                then(
-                  onFulfilled: (
-                    v: { error: { message: string } | null },
-                  ) => unknown,
-                ) {
-                  // Allow `await supabase.update().eq()` (no .select()).
-                  return Promise.resolve({ error: result.error }).then(
-                    onFulfilled,
-                  );
+                in(scopeColumn: string, values: unknown[]) {
+                  entry.scope = { column: scopeColumn, values };
+                  return {
+                    select() {
+                      return Promise.resolve(result);
+                    },
+                  };
                 },
               };
             },
@@ -130,16 +135,24 @@ describe('handleTemplateWebhookChange — status update', () => {
           message_template_name: 'order_confirmation',
           message_template_language: 'en_US',
         },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(supabaseCalls).toHaveLength(1);
-    expect(supabaseCalls[0].table).toBe('message_templates');
-    expect(supabaseCalls[0].filter).toEqual({
+    expect(supabaseCalls.map((c) => c.table)).toEqual([
+      'whatsapp_config',
+      'message_templates',
+    ]);
+    expect(supabaseCalls[0].filter).toEqual({ column: 'waba_id', value: WABA });
+    expect(supabaseCalls[1].filter).toEqual({
       column: 'meta_template_id',
       value: '12345', // coerced to string so the .eq matches the TEXT column
     });
-    expect(supabaseCalls[0].update).toEqual({
+    expect(supabaseCalls[1].scope).toEqual({
+      column: 'account_id',
+      values: ['acc-1'],
+    });
+    expect(supabaseCalls[1].update).toEqual({
       status: 'APPROVED',
       rejection_reason: null,
       submission_error: null,
@@ -156,11 +169,12 @@ describe('handleTemplateWebhookChange — status update', () => {
           message_template_id: 'TMPL_99',
           reason: 'Template uses non-compliant language.',
         },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update?.status).toBe('REJECTED');
-    expect(calls[0].update?.rejection_reason).toBe(
+    expect(templateCalls(calls)[0].update?.status).toBe('REJECTED');
+    expect(templateCalls(calls)[0].update?.rejection_reason).toBe(
       'Template uses non-compliant language.',
     );
   });
@@ -171,10 +185,13 @@ describe('handleTemplateWebhookChange — status update', () => {
       {
         field: 'message_template_status_update',
         value: { event: 'REJECTED', message_template_id: '7' },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update?.rejection_reason).toBe('Rejected by Meta');
+    expect(templateCalls(calls)[0].update?.rejection_reason).toBe(
+      'Rejected by Meta',
+    );
   });
 
   it('maps REINSTATED to APPROVED and clears the old rejection', async () => {
@@ -183,10 +200,11 @@ describe('handleTemplateWebhookChange — status update', () => {
       {
         field: 'message_template_status_update',
         value: { event: 'REINSTATED', message_template_id: '1' },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update).toEqual({
+    expect(templateCalls(calls)[0].update).toEqual({
       status: 'APPROVED',
       rejection_reason: null,
       submission_error: null,
@@ -215,10 +233,11 @@ describe('handleTemplateWebhookChange — status update', () => {
         {
           field: 'message_template_status_update',
           value: { event, message_template_id: '1' },
+          wabaId: WABA,
         },
         stub,
       );
-      expect(calls[0].update).toEqual({ status: event });
+      expect(templateCalls(calls)[0].update).toEqual({ status: event });
     }
   });
 
@@ -228,10 +247,13 @@ describe('handleTemplateWebhookChange — status update', () => {
       {
         field: 'message_template_status_update',
         value: { event: 'DELETED', message_template_id: '1' },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update).toEqual({ status: 'PENDING_DELETION' });
+    expect(templateCalls(calls)[0].update).toEqual({
+      status: 'PENDING_DELETION',
+    });
   });
 
   it('normalises PENDING_REVIEW → PENDING', async () => {
@@ -240,10 +262,11 @@ describe('handleTemplateWebhookChange — status update', () => {
       {
         field: 'message_template_status_update',
         value: { event: 'PENDING_REVIEW', message_template_id: '1' },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update?.status).toBe('PENDING');
+    expect(templateCalls(calls)[0].update?.status).toBe('PENDING');
   });
 
   it('logs and exits when meta_template_id is missing (no UPDATE issued)', async () => {
@@ -258,9 +281,9 @@ describe('handleTemplateWebhookChange — status update', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('logs a warning when the row is unknown locally and no WABA id was passed', async () => {
+  it('writes nothing and warns when no WABA id was passed', async () => {
     const warn = vi.spyOn(console, 'warn');
-    const { stub, calls } = makeSupabaseStub({ data: [], error: null });
+    const { stub, calls } = makeSupabaseStub();
     await handleTemplateWebhookChange(
       {
         field: 'message_template_status_update',
@@ -274,16 +297,13 @@ describe('handleTemplateWebhookChange — status update', () => {
     );
     expect(warn).toHaveBeenCalled();
     expect(String(warn.mock.calls[0][0])).toContain('no WABA id');
-    // Without a WABA id there is nothing to resolve the account with —
-    // no config lookup, no insert.
-    expect(calls).toHaveLength(1);
-    expect(calls[0].insert).toBeUndefined();
+    // Without a WABA id there is nothing to scope the write to — no
+    // config lookup, no unscoped UPDATE, no insert.
+    expect(calls).toHaveLength(0);
   });
 });
 
 describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
-  const CONFIG = { account_id: 'acc-1', user_id: 'admin-1' };
-
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -310,12 +330,12 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
     );
 
     expect(calls.map((c) => c.table)).toEqual([
-      'message_templates', // the original UPDATE (0 rows)
-      'whatsapp_config', // resolve the tenant
+      'whatsapp_config', // resolve the tenant(s) on the WABA
+      'message_templates', // the scoped UPDATE (0 rows)
       'message_templates', // the stub INSERT
     ]);
-    expect(calls[1].select).toBe('account_id, user_id');
-    expect(calls[1].filter).toEqual({ column: 'waba_id', value: 'WABA-1' });
+    expect(calls[0].select).toBe('account_id, user_id');
+    expect(calls[0].filter).toEqual({ column: 'waba_id', value: 'WABA-1' });
     expect(calls[2].insert).toEqual({
       account_id: 'acc-1',
       user_id: 'admin-1',
@@ -372,7 +392,7 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
       },
       stub,
     );
-    expect(calls).toHaveLength(2); // update + config lookup, no insert
+    expect(calls).toHaveLength(1); // config lookup only: no update, no insert
     expect(calls.some((c) => c.insert)).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0][0]);
@@ -425,7 +445,7 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
       },
       stub,
     );
-    expect(calls[0].update).toEqual({ quality_score: 'RED' });
+    expect(calls[1].update).toEqual({ quality_score: 'RED' });
     expect(calls[2].insert).toEqual({
       account_id: 'acc-1',
       user_id: 'admin-1',
@@ -492,6 +512,7 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
       column: 'meta_template_id',
       value: '561',
     });
+    expect(updates[1].scope).toEqual({ column: 'account_id', values: ['acc-1'] });
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -509,7 +530,7 @@ describe('handleTemplateWebhookChange — unknown template stub (#534)', () => {
       },
       stub,
     );
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // config lookup + 0-row update, no insert
     expect(String(warn.mock.calls[0][0])).toContain('no message_template_name');
   });
 });
@@ -525,11 +546,13 @@ describe('handleTemplateWebhookChange — quality update', () => {
           previous_quality_score: 'GREEN',
           new_quality_score: 'YELLOW',
         },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update).toEqual({ quality_score: 'YELLOW' });
-    expect(calls[0].filter).toEqual({
+    expect(calls[1].update).toEqual({ quality_score: 'YELLOW' });
+    expect(calls[1].scope).toEqual({ column: 'account_id', values: ['acc-1'] });
+    expect(calls[1].filter).toEqual({
       column: 'meta_template_id',
       value: '99',
     });
@@ -544,10 +567,156 @@ describe('handleTemplateWebhookChange — quality update', () => {
           message_template_id: '99',
           new_quality_score: 'PURPLE', // not a real Meta value
         },
+        wabaId: WABA,
       },
       stub,
     );
-    expect(calls[0].update).toEqual({ quality_score: null });
+    expect(calls[1].update).toEqual({ quality_score: null });
+  });
+});
+
+// In-memory message_templates + whatsapp_config, applying the real
+// .eq / .in filters, so these cases prove which rows a write touches
+// rather than which filter arguments were passed.
+function makeRowStore(
+  templates: { id: string; account_id: string; meta_template_id: string }[],
+  configs: { account_id: string; user_id: string; waba_id: string }[],
+) {
+  const rows = templates.map((r) => ({ ...r }) as Record<string, unknown>);
+  const stub = {
+    from(table: string) {
+      if (table === 'whatsapp_config') {
+        return {
+          select() {
+            return {
+              eq(_column: 'waba_id', value: unknown) {
+                return Promise.resolve({
+                  data: configs
+                    .filter((c) => c.waba_id === value)
+                    .map(({ account_id, user_id }) => ({ account_id, user_id })),
+                  error: null,
+                });
+              },
+            };
+          },
+        };
+      }
+      return {
+        insert() {
+          return Promise.resolve({ error: null });
+        },
+        update(payload: Record<string, unknown>) {
+          return {
+            eq(column: string, value: unknown) {
+              return {
+                in(scopeColumn: string, values: unknown[]) {
+                  return {
+                    select() {
+                      const hit = rows.filter(
+                        (r) =>
+                          r[column] === value &&
+                          values.includes(r[scopeColumn]),
+                      );
+                      hit.forEach((r) => Object.assign(r, payload));
+                      return Promise.resolve({
+                        data: hit.map((r) => ({ id: r.id as string })),
+                        error: null,
+                      });
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+  return { stub: stub as unknown as SupabaseClient, rows };
+}
+
+describe('handleTemplateWebhookChange — tenant scoping (WABA → accounts)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  const rejected = {
+    field: 'message_template_status_update',
+    value: {
+      event: 'REJECTED',
+      message_template_id: 'T-1',
+      message_template_name: 'promo',
+      reason: 'secret reason',
+    },
+  };
+
+  it("leaves an unrelated account's row with the same meta_template_id untouched", async () => {
+    const { stub, rows } = makeRowStore(
+      [
+        { id: 'own', account_id: 'acc-1', meta_template_id: 'T-1' },
+        { id: 'spoof', account_id: 'acc-evil', meta_template_id: 'T-1' },
+      ],
+      [{ account_id: 'acc-1', user_id: 'u1', waba_id: 'WABA-1' }],
+    );
+    await handleTemplateWebhookChange({ ...rejected, wabaId: 'WABA-1' }, stub);
+    expect(rows.find((r) => r.id === 'own')).toMatchObject({
+      status: 'REJECTED',
+      rejection_reason: 'secret reason',
+    });
+    expect(rows.find((r) => r.id === 'spoof')).not.toHaveProperty('status');
+    expect(rows.find((r) => r.id === 'spoof')).not.toHaveProperty(
+      'rejection_reason',
+    );
+  });
+
+  it('still updates every account that shares the WABA', async () => {
+    const { stub, rows } = makeRowStore(
+      [
+        { id: 'a', account_id: 'acc-1', meta_template_id: 'T-1' },
+        { id: 'b', account_id: 'acc-2', meta_template_id: 'T-1' },
+        { id: 'x', account_id: 'acc-other', meta_template_id: 'T-1' },
+      ],
+      [
+        { account_id: 'acc-1', user_id: 'u1', waba_id: 'WABA-1' },
+        { account_id: 'acc-2', user_id: 'u2', waba_id: 'WABA-1' },
+        { account_id: 'acc-other', user_id: 'u3', waba_id: 'WABA-9' },
+      ],
+    );
+    await handleTemplateWebhookChange(
+      {
+        field: 'message_template_quality_update',
+        value: { message_template_id: 'T-1', new_quality_score: 'RED' },
+        wabaId: 'WABA-1',
+      },
+      stub,
+    );
+    expect(rows.find((r) => r.id === 'a')?.quality_score).toBe('RED');
+    expect(rows.find((r) => r.id === 'b')?.quality_score).toBe('RED');
+    expect(rows.find((r) => r.id === 'x')).not.toHaveProperty('quality_score');
+  });
+
+  it('writes nothing at all when the WABA id is missing', async () => {
+    const { stub, rows } = makeRowStore(
+      [
+        { id: 'a', account_id: 'acc-1', meta_template_id: 'T-1' },
+        { id: 'b', account_id: 'acc-2', meta_template_id: 'T-1' },
+      ],
+      [{ account_id: 'acc-1', user_id: 'u1', waba_id: 'WABA-1' }],
+    );
+    await handleTemplateWebhookChange(rejected, stub);
+    await handleTemplateWebhookChange(
+      {
+        field: 'message_template_quality_update',
+        value: { message_template_id: 'T-1', new_quality_score: 'RED' },
+      },
+      stub,
+    );
+    for (const r of rows) {
+      expect(r).not.toHaveProperty('status');
+      expect(r).not.toHaveProperty('quality_score');
+    }
   });
 });
 

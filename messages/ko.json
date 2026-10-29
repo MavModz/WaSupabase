@@ -2568,6 +2568,7 @@
       "needsTemplateName": "send_template에는 template_name이 필요합니다",
       "needsContactAndTag": "{step}에는 연락처 + tag_id가 필요합니다",
       "needsPipelineStage": "create_deal에는 파이프라인 + 단계가 필요합니다",
+      "pipelineNotInAccount": "create_deal: 파이프라인 또는 단계가 이 계정에 속하지 않습니다",
       "needsUrl": "send_webhook에는 URL이 필요합니다",
       "pausedWhileWaitingForReply": "답장을 기다리는 동안 자동화가 일시 중지되었습니다",
       "noReplyWithin24h": "24시간 내 답장 없음",

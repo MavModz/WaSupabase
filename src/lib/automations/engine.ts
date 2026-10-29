@@ -936,6 +936,26 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'create_deal': {
       const cfg = step.step_config as CreateDealStepConfig
       if (!cfg.pipeline_id || !cfg.stage_id) throw new Error(tErr('needsPipelineStage'))
+      // The service-role client bypasses RLS and the ids come from the
+      // saved step config, so confirm the pipeline is this account's and
+      // the stage sits in that pipeline. Migration 060's deals trigger is
+      // the real guard; this check just fails the step with a readable
+      // error instead of an insert error.
+      const { data: pipeline } = await db
+        .from('pipelines')
+        .select('id')
+        .eq('id', cfg.pipeline_id)
+        .eq('account_id', args.automation.account_id)
+        .maybeSingle()
+      const { data: stage } = pipeline
+        ? await db
+            .from('pipeline_stages')
+            .select('id')
+            .eq('id', cfg.stage_id)
+            .eq('pipeline_id', cfg.pipeline_id)
+            .maybeSingle()
+        : { data: null }
+      if (!pipeline || !stage) throw new Error(tErr('pipelineNotInAccount'))
       // Match the account's configured default currency rather than
       // the static `deals.currency` DB default — keeps automation-
       // created deals consistent with the one-currency-per-account

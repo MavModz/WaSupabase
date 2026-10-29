@@ -2568,6 +2568,7 @@
       "needsTemplateName": "send_template precisa de template_name",
       "needsContactAndTag": "{step} precisa de contato + tag_id",
       "needsPipelineStage": "create_deal precisa de pipeline + etapa",
+      "pipelineNotInAccount": "create_deal: o pipeline ou a etapa não pertence a esta conta",
       "needsUrl": "send_webhook precisa de URL",
       "pausedWhileWaitingForReply": "automação pausada enquanto aguardava resposta",
       "noReplyWithin24h": "sem resposta em 24h",

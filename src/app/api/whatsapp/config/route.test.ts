@@ -78,7 +78,11 @@ vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(async () => supabaseMock),
 }))
 
-const serviceRole = vi.hoisted(() => ({ lookups: 0 }))
+const serviceRole = vi.hoisted(() => ({
+  lookups: 0,
+  // Row the "claimed by another account" lookup returns.
+  claimed: null as { account_id: string } | null,
+}))
 
 vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
@@ -86,7 +90,7 @@ vi.mock('@supabase/supabase-js', () => ({
       serviceRole.lookups += 1
       const b: Record<string, unknown> = {}
       for (const m of ['select', 'eq', 'neq']) b[m] = vi.fn(() => b)
-      b.maybeSingle = vi.fn(async () => ({ data: null, error: null }))
+      b.maybeSingle = vi.fn(async () => ({ data: serviceRole.claimed, error: null }))
       return b
     }),
   })),
@@ -144,6 +148,7 @@ beforeEach(() => {
   configUpdates.length = 0
   configDeletes = 0
   serviceRole.lookups = 0
+  serviceRole.claimed = null
   supabaseMock = makeSupabaseMock()
   for (const fn of Object.values(meta)) fn.mockClear()
 })
@@ -185,6 +190,38 @@ describe('POST /api/whatsapp/config', () => {
     expect(meta.subscribeWabaToApp).toHaveBeenCalledTimes(1)
     expect(configInserts).toHaveLength(1)
     expect(configInserts[0]).toMatchObject({ account_id: 'acct-1', user_id: 'user-1' })
+  })
+})
+
+describe('POST /api/whatsapp/config number-claimed check (no existence oracle)', () => {
+  it('answers a bad token with the credential error, not 409, even if the number is claimed elsewhere', async () => {
+    serviceRole.claimed = { account_id: 'acct-other' }
+    meta.verifyPhoneNumber.mockRejectedValueOnce(new Error('Invalid OAuth access token'))
+
+    const res = await saveConfig({ access_token: 'guessed-token' })
+
+    expect(res.status).not.toBe(409)
+    expect(res.status).toBeGreaterThanOrEqual(400)
+    // The ownership lookup never ran, so the response cannot depend on it.
+    expect(serviceRole.lookups).toBe(0)
+    expect(configInserts).toHaveLength(0)
+  })
+
+  it('calls Meta before the ownership lookup and keeps the 409 for a verified number', async () => {
+    serviceRole.claimed = { account_id: 'acct-other' }
+    let lookupsWhenMetaCalled = -1
+    meta.verifyPhoneNumber.mockImplementationOnce(async () => {
+      lookupsWhenMetaCalled = serviceRole.lookups
+      return { id: '111222333', display_phone_number: '+1 555 0100' }
+    })
+
+    const res = await saveConfig()
+
+    expect(lookupsWhenMetaCalled).toBe(0)
+    expect(serviceRole.lookups).toBe(1)
+    expect(res.status).toBe(409)
+    expect(meta.registerPhoneNumber).not.toHaveBeenCalled()
+    expect(configInserts).toHaveLength(0)
   })
 })
 

@@ -307,6 +307,17 @@ export async function POST(request: Request) {
       }
     }
 
+    // Verify credentials with Meta BEFORE saving
+    let phoneInfo
+    try {
+      phoneInfo = await verifyPhoneNumber({
+        phoneNumberId: phone_number_id,
+        accessToken: access_token,
+      })
+    } catch (err) {
+      return metaFailure(err, 'verify_number', metaCtx)
+    }
+
     // Reject if another account has already claimed this phone_number_id.
     // wacrm is single-tenant-per-WhatsApp-number — letting two accounts
     // bind the same number causes the webhook's `.single()` lookup to
@@ -314,6 +325,11 @@ export async function POST(request: Request) {
     // inbound message. See issue #136. Post-multi-user we key on
     // account_id (not user_id) since teammates inside the same account
     // all share one config; the conflict is between accounts.
+    //
+    // Runs only AFTER Meta accepted the token for this number: checked
+    // first, the 409 told any signed-in admin whether an arbitrary
+    // phone_number_id was registered here (an existence oracle). Now only
+    // a caller holding a valid token for the number can learn that.
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('account_id')
@@ -337,17 +353,6 @@ export async function POST(request: Request) {
         },
         { status: 409 }
       )
-    }
-
-    // Verify credentials with Meta BEFORE saving
-    let phoneInfo
-    try {
-      phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: phone_number_id,
-        accessToken: access_token,
-      })
-    } catch (err) {
-      return metaFailure(err, 'verify_number', metaCtx)
     }
 
     // The number resolves — now make sure it lives under the WABA the

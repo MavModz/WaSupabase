@@ -8,6 +8,11 @@ const h = vi.hoisted(() => ({
     ownedCustomField: null as { id: string } | null,
     /** Row the account-scoped `conversations` lookup resolves. */
     ownedConversation: null as { id: string } | null,
+    /** Rows the account-scoped pipeline / pipeline-scoped stage lookups resolve. */
+    ownedPipeline: null as { id: string } | null,
+    ownedStage: null as { id: string } | null,
+    pipelineReads: [] as { table: string; filters: [string, string, unknown][] }[],
+    dealInserts: [] as Record<string, unknown>[],
     automations: [] as Record<string, unknown>[],
     steps: [] as Record<string, unknown>[],
     fromCalls: [] as string[],
@@ -83,6 +88,17 @@ vi.mock("./admin-client", () => {
     }
     if (table === "conversations") {
       return { data: state.ownedConversation, error: null };
+    }
+    if (table === "pipelines" || table === "pipeline_stages") {
+      state.pipelineReads.push({ table, filters: ops.filters });
+      return {
+        data: table === "pipelines" ? state.ownedPipeline : state.ownedStage,
+        error: null,
+      };
+    }
+    if (table === "deals" && type === "insert") {
+      state.dealInserts.push(ops.payload as Record<string, unknown>);
+      return { data: null, error: null };
     }
     if (table === "custom_fields") {
       // account-scoped ownership lookup for a custom field definition
@@ -188,6 +204,10 @@ beforeEach(() => {
   h.state.owned = null;
   h.state.ownedCustomField = null;
   h.state.ownedConversation = null;
+  h.state.ownedPipeline = null;
+  h.state.ownedStage = null;
+  h.state.pipelineReads = [];
+  h.state.dealInserts = [];
   h.state.automations = [];
   h.state.steps = [];
   h.state.fromCalls = [];
@@ -391,6 +411,88 @@ describe("update_contact_field — custom fields", () => {
 
     expect(h.state.upsertCalls).toHaveLength(0);
     expect(h.state.updateCalls).toHaveLength(0);
+  });
+});
+
+describe("create_deal — pipeline / stage must belong to the account", () => {
+  function dealStep() {
+    return {
+      id: "s1",
+      automation_id: "a1",
+      step_type: "create_deal",
+      position: 0,
+      parent_step_id: null,
+      step_config: { pipeline_id: "pl-1", stage_id: "st-1", title: "Deal" },
+    };
+  }
+
+  async function run() {
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: {},
+    });
+  }
+
+  it("refuses a pipeline from another account and inserts no deal", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedPipeline = null; // account-scoped lookup finds nothing
+    h.state.ownedStage = { id: "st-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [dealStep()];
+
+    await run();
+
+    expect(h.state.pipelineReads[0]).toEqual({
+      table: "pipelines",
+      filters: [
+        ["eq", "id", "pl-1"],
+        ["eq", "account_id", ACCOUNT],
+      ],
+    });
+    expect(h.state.dealInserts).toHaveLength(0);
+    expect(h.state.logUpdates).toContainEqual(expect.objectContaining({
+      status: "failed",
+      error_message: "create_deal: pipeline or stage does not belong to this account",
+    }));
+  });
+
+  it("refuses a stage that is not in the given pipeline", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedPipeline = { id: "pl-1" };
+    h.state.ownedStage = null; // stage belongs to some other pipeline
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [dealStep()];
+
+    await run();
+
+    expect(h.state.pipelineReads[1]).toEqual({
+      table: "pipeline_stages",
+      filters: [
+        ["eq", "id", "st-1"],
+        ["eq", "pipeline_id", "pl-1"],
+      ],
+    });
+    expect(h.state.dealInserts).toHaveLength(0);
+  });
+
+  it("creates the deal when both belong to the account", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.ownedPipeline = { id: "pl-1" };
+    h.state.ownedStage = { id: "st-1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [dealStep()];
+
+    await run();
+
+    expect(h.state.dealInserts).toHaveLength(1);
+    expect(h.state.dealInserts[0]).toMatchObject({
+      account_id: ACCOUNT,
+      pipeline_id: "pl-1",
+      stage_id: "st-1",
+      contact_id: "c1",
+    });
   });
 });
 

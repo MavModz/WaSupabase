@@ -20,11 +20,14 @@
  * button (the legacy fallback, intentionally preserved).
  *
  * ─── Multi-tenant note ────────────────────────────────────────────
- * `meta_template_id` is globally unique per WABA — the lookup doesn't
- * filter by user_id. If two wacrm tenants somehow ended up with the
- * same id (impossible in practice, but a theoretical race during
- * cross-tenant moves), the handler updates both rows and logs a
- * warning so operators can investigate.
+ * Every write is scoped to the accounts whose `whatsapp_config.waba_id`
+ * equals the WABA id on the webhook entry (`accountsForWaba`). Matching
+ * on `meta_template_id` alone would let any tenant who copies another
+ * tenant's template id into its own row receive that tenant's status,
+ * quality score and rejection reason. Several accounts may legitimately
+ * hold numbers on the same WABA (and so share `meta_template_id`); all
+ * of them are still updated, and >1 matched row is logged. With no WABA
+ * id, or no account mapped to it, nothing is written.
  *
  * ─── Unknown templates (issue #534) ───────────────────────────────
  * A template created directly in Meta Business Manager has no local
@@ -167,11 +170,24 @@ async function handleStatusUpdate(
     update.submission_error = null
   }
 
-  const { data, error } = await supabase
-    .from('message_templates')
-    .update(update)
-    .eq('meta_template_id', metaTemplateId)
-    .select('id')
+  const configs = await accountsForWaba(supabase, {
+    kind: 'status update',
+    metaTemplateId,
+    name: value.message_template_name,
+    wabaId,
+  })
+  if (!configs) return
+  const accountIds = configs.map((c) => c.account_id)
+
+  const runUpdate = () =>
+    supabase
+      .from('message_templates')
+      .update(update)
+      .eq('meta_template_id', metaTemplateId)
+      .in('account_id', accountIds)
+      .select('id')
+
+  const { data, error } = await runUpdate()
 
   if (error) {
     console.error(
@@ -188,13 +204,9 @@ async function handleStatusUpdate(
       name: value.message_template_name,
       language: value.message_template_language,
       wabaId,
+      configs,
       fields: update,
-      retryUpdate: () =>
-        supabase
-          .from('message_templates')
-          .update(update)
-          .eq('meta_template_id', metaTemplateId)
-          .select('id'),
+      retryUpdate: runUpdate,
       supabase,
     })
     return
@@ -229,12 +241,22 @@ async function handleQualityUpdate(
       ? (raw.toUpperCase() as 'GREEN' | 'YELLOW' | 'RED')
       : null
 
+  const configs = await accountsForWaba(supabase, {
+    kind: 'quality update',
+    metaTemplateId,
+    name: value.message_template_name,
+    wabaId,
+  })
+  if (!configs) return
+  const accountIds = configs.map((c) => c.account_id)
+
   const update = { quality_score: score }
   const runUpdate = () =>
     supabase
       .from('message_templates')
       .update(update)
       .eq('meta_template_id', metaTemplateId)
+      .in('account_id', accountIds)
       .select('id')
 
   const { data, error } = await runUpdate()
@@ -257,11 +279,70 @@ async function handleQualityUpdate(
       name: value.message_template_name,
       language: value.message_template_language,
       wabaId,
+      configs,
       fields: update,
       retryUpdate: runUpdate,
       supabase,
     })
   }
+}
+
+interface WabaConfigRow {
+  account_id: string
+  user_id: string
+}
+
+function describeTemplate(
+  metaTemplateId: string,
+  name: string | undefined,
+  wabaId: string | undefined,
+): string {
+  return `meta_template_id ${metaTemplateId} (${name ?? 'unnamed'}), WABA ${wabaId ?? 'unknown'}`
+}
+
+/**
+ * The accounts a template event may write to: every `whatsapp_config`
+ * row on the entry's WABA. Returns null (after logging) when there is
+ * no WABA id, the lookup fails, or no account maps to it — the caller
+ * must then write nothing rather than fall back to an unscoped update.
+ */
+async function accountsForWaba(
+  supabase: SupabaseClient,
+  p: {
+    kind: string
+    metaTemplateId: string
+    name: string | undefined
+    wabaId: string | undefined
+  },
+): Promise<WabaConfigRow[] | null> {
+  const where = describeTemplate(p.metaTemplateId, p.name, p.wabaId)
+  if (!p.wabaId) {
+    console.warn(
+      `[template-webhook] ${p.kind} for ${where} — no WABA id on the webhook entry, cannot resolve the account; nothing updated. Run "Sync from Meta".`,
+    )
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('whatsapp_config')
+    .select('account_id, user_id')
+    .eq('waba_id', p.wabaId)
+
+  if (error) {
+    console.error(
+      `[template-webhook] ${p.kind} for ${where} — whatsapp_config lookup failed:`,
+      error.message,
+    )
+    return null
+  }
+  const rows = (data ?? []) as WabaConfigRow[]
+  if (rows.length === 0) {
+    console.warn(
+      `[template-webhook] ${p.kind} for ${where} — no whatsapp_config rows match that WABA id; nothing updated.`,
+    )
+    return null
+  }
+  return rows
 }
 
 interface StubParams {
@@ -271,6 +352,8 @@ interface StubParams {
   name: string | undefined
   language: string | undefined
   wabaId: string | undefined
+  /** whatsapp_config rows on that WABA, from accountsForWaba (non-empty). */
+  configs: WabaConfigRow[]
   /** Event-derived columns (status / rejection_reason / quality_score). */
   fields: Record<string, unknown>
   /** Re-runs the original UPDATE if the INSERT loses a race. */
@@ -282,8 +365,8 @@ interface StubParams {
 }
 
 /**
- * 0-row fallback shared by the status and quality handlers: resolve
- * the tenant from the WABA id and insert a stub `message_templates`
+ * 0-row fallback shared by the status and quality handlers: take the
+ * tenant resolved from the WABA id and insert a stub `message_templates`
  * row so the event isn't lost. Every early-return path logs the WABA
  * id so an operator can tell which tenant needs a "Sync from Meta".
  *
@@ -296,14 +379,8 @@ interface StubParams {
  */
 async function createStubForUnknownTemplate(p: StubParams): Promise<void> {
   const { kind, metaTemplateId, name, wabaId, supabase } = p
-  const where = `meta_template_id ${metaTemplateId} (${name ?? 'unnamed'}), WABA ${wabaId ?? 'unknown'}`
+  const where = describeTemplate(metaTemplateId, name, wabaId)
 
-  if (!wabaId) {
-    console.warn(
-      `[template-webhook] ${kind} for unknown template ${where} — no WABA id on the webhook entry, cannot resolve the account; run "Sync from Meta".`,
-    )
-    return
-  }
   if (!name) {
     console.warn(
       `[template-webhook] ${kind} for unknown template ${where} — event has no message_template_name, cannot create a stub row; run "Sync from Meta".`,
@@ -311,22 +388,10 @@ async function createStubForUnknownTemplate(p: StubParams): Promise<void> {
     return
   }
 
-  const { data: configs, error: configError } = await supabase
-    .from('whatsapp_config')
-    .select('account_id, user_id')
-    .eq('waba_id', wabaId)
-
-  if (configError) {
-    console.error(
-      `[template-webhook] ${kind} for unknown template ${where} — whatsapp_config lookup failed:`,
-      configError.message,
-    )
-    return
-  }
-  const rows = (configs ?? []) as { account_id: string; user_id: string }[]
+  const rows = p.configs
   if (rows.length !== 1) {
     console.warn(
-      `[template-webhook] ${kind} for unknown template ${where} — ${rows.length === 0 ? 'no' : rows.length} whatsapp_config rows match that WABA id; not creating a stub. Run "Sync from Meta" for the owning account.`,
+      `[template-webhook] ${kind} for unknown template ${where} — ${rows.length} whatsapp_config rows match that WABA id; not creating a stub. Run "Sync from Meta" for the owning account.`,
     )
     return
   }

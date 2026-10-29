@@ -1,9 +1,15 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
     tsconfigPaths: true,
-    alias: { "@app-messages": new URL("./messages/en.json", import.meta.url).pathname },
+    // fileURLToPath, not URL.pathname: .pathname keeps percent-encoding
+    // and a leading slash before the drive letter, so a checkout path with
+    // a space (e.g. "D:\WaCRM GIT") never resolved on Windows.
+    alias: {
+      "@app-messages": fileURLToPath(new URL("./messages/en.json", import.meta.url)),
+    },
   },
   test: {
     environment: "node",

@@ -69,3 +69,12 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      # pgTAP suites in supabase/tests/ against the same local database:
+      # 00_* asserts RLS coverage from the catalog (no public table
+      # without RLS, no tenant table without a policy); 10_* signs in as
+      # two tenants and proves neither can read or write the other's
+      # rows. Each file runs in BEGIN … ROLLBACK, so it leaves no data.
+      # Local stack only — never add --linked or a remote --db-url here.
+      - name: Run pgTAP database tests
+        run: supabase test db
