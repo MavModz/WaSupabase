@@ -63,6 +63,8 @@ import {
   AUTO_ADVANCING_NODE_TYPES,
   MAX_NODES_PER_ADVANCE,
 } from "./types";
+import { canRunEngines } from "@/lib/entitlements/gates";
+import { getEntitlements } from "@/lib/entitlements/resolve";
 
 // ============================================================
 // Pure helpers — extracted so engine.test.ts can exercise them
@@ -992,6 +994,12 @@ export async function dispatchInboundToFlows(
   const db = supabaseAdmin();
   let ownedRunId: string | null = null;
   try {
+    // Restricted and locked: no new runs, and active runs don't advance.
+    // They are settled by the existing timeout sweep (R5).
+    if (!canRunEngines(await getEntitlements(input.accountId))) {
+      return { consumed: false };
+    }
+
     const activeRun = await loadActiveRunForContact(
       db,
       input.accountId,

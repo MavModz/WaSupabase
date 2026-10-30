@@ -17,6 +17,7 @@ import {
   generateWebhookSecret,
   checkWebhookUrl,
 } from '@/lib/webhooks/endpoints';
+import { fromPostgrestError } from '@/lib/entitlements/errors';
 
 export async function GET(request: Request) {
   try {
@@ -87,6 +88,8 @@ export async function POST(request: Request) {
       .select(WEBHOOK_PUBLIC_COLUMNS)
       .single();
 
+    const planErr = fromPostgrestError(error);
+    if (planErr) throw planErr;
     if (error || !created) {
       console.error('[api/v1/webhooks] create error:', error);
       return fail('internal', 'Failed to create webhook', 500);

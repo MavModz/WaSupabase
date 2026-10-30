@@ -53,7 +53,7 @@ interface BroadcastPayload {
   headerMediaUrl?: string;
 }
 
-export type BroadcastSendInterruption = 'lease_lost' | 'lease_error';
+export type BroadcastSendInterruption = 'lease_lost' | 'lease_error' | 'plan_limit';
 
 export interface BroadcastSendOutcome {
   broadcastId: string;
@@ -104,7 +104,8 @@ function heldLeaseOrThrow(result: DeliveryLeaseResult): string {
 
 interface BroadcastApiResult {
   phone: string;
-  status: 'sent' | 'failed';
+  /** 'skipped': the plan's allowance ran out (entitlements on only). */
+  status: 'sent' | 'failed' | 'skipped';
   whatsapp_message_id?: string;
   error?: string;
 }
@@ -539,6 +540,13 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
               continue;
             }
 
+            // Leave it 'pending': Resume sends it after an upgrade or in
+            // the next period (R3).
+            if (result.status === 'skipped') {
+              interruption = 'plan_limit';
+              continue;
+            }
+
             if (result.status === 'sent') {
               await supabase
                 .from('broadcast_recipients')
@@ -577,6 +585,8 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
           }
         }
 
+        if (interruption === 'plan_limit') break;
+
         const progressPct =
           30 + Math.round(((i + batch.length) / totalRecipients) * 60);
         setProgress(progressPct);
@@ -590,7 +600,17 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       // Aggregate counts are maintained by the DB trigger (migration
       // 003); we only flip the final status here.
       setProgress(95);
-      if (!interruption) {
+      if (interruption === 'plan_limit') {
+        // Still 'sending' with pending recipients, which is what offers
+        // Resume. Hand back the lease so that Resume can claim it now.
+        const pause = supabase
+          .from('broadcasts')
+          .update({ paused_reason: 'plan_limit', delivery_lease_until: null })
+          .eq('id', broadcast.id);
+        await (heldLease === null
+          ? pause.is('delivery_lease_until', null)
+          : pause.eq('delivery_lease_until', heldLease));
+      } else if (!interruption) {
         const finalStatus = failedCount === totalRecipients ? 'failed' : 'sent';
         const finalize = supabase
           .from('broadcasts')

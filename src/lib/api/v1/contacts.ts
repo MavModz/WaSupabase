@@ -13,6 +13,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
 import { addContactTagAndDispatch } from '@/lib/contacts/tag-events';
 import { parseInternationalPhone } from '@/lib/whatsapp/phone-utils';
+import { fromPostgrestError } from '@/lib/entitlements/errors';
 
 /** Row select that embeds the contact's tags for serialization. */
 export const CONTACT_SELECT = '*, contact_tags(tags(*))';
@@ -148,6 +149,9 @@ export async function findOrCreateContact(
       const raced = await findExistingContact(db, accountId, sanitized);
       if (raced) return { id: raced.id, created: false };
     }
+    // At the plan's contact limit (068). toApiErrorResponse maps it.
+    const planErr = fromPostgrestError(error);
+    if (planErr) throw planErr;
     console.error('[api/v1/contacts] create error:', error);
     throw new ContactError('Failed to create contact', 500);
   }

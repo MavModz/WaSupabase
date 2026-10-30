@@ -2934,6 +2934,33 @@
       "submitFailed": "템플릿을 제출하지 못했습니다.",
       "metaApiStatus": "Meta API 오류: {status}",
       "syncFailed": "템플릿을 동기화하지 못했습니다"
+    },
+    "plan": {
+      "limitReached": "요금제 한도에 도달했습니다: {resource} {limit}개.",
+      "featureUnavailable": "{resource}: 현재 요금제에서 사용할 수 없습니다.",
+      "accountRestricted": "계정이 제한되어 이 작업이 일시 중지되었습니다.",
+      "accountLocked": "계정이 잠겼습니다. 계속하려면 요금제를 선택하세요.",
+      "downgradeBlocked": "이 요금제로 변경하기 전에 좌석 {count}개를 비워 주세요.",
+      "workspaceFull": "이 워크스페이스가 가득 찼습니다. 관리자에게 좌석을 비우거나 업그레이드해 달라고 요청하세요.",
+      "broadcastOverAllowance": "이 브로드캐스트의 수신자는 {requested}명이고, 이번 기간에 남은 수는 {remaining}명입니다({date}에 초기화).",
+      "meteringUnavailable": "요금제의 브로드캐스트 허용량을 확인할 수 없습니다. 아무것도 전송되지 않았습니다. 잠시 후 다시 시도하세요.",
+      "resources": {
+        "seats": "좌석",
+        "contacts": "연락처",
+        "broadcast_recipients": "브로드캐스트 수신자",
+        "automations_active": "활성 자동화",
+        "automations_total": "자동화",
+        "flows_active": "활성 플로우",
+        "flows_total": "플로우",
+        "api_keys": "API 키",
+        "public_api": "공개 API",
+        "webhook_endpoints": "웹훅 엔드포인트",
+        "ai_auto_reply": "AI 자동 응답 봇",
+        "ai_drafts": "AI 초안",
+        "kb_documents": "지식 베이스 문서",
+        "pipelines": "파이프라인",
+        "messages": "메시지"
+      }
     }
   }
 }

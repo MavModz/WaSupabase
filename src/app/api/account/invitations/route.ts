@@ -33,6 +33,7 @@ import {
   RATE_LIMITS,
 } from "@/lib/rate-limit";
 import { getT } from "@/lib/i18n/translate";
+import { planErrorResponse } from "@/lib/entitlements/errors";
 
 const t = getT("Api");
 
@@ -232,6 +233,8 @@ export async function POST(request: Request) {
       .select("id, role, label, expires_at, created_at")
       .single();
 
+    const planRes = planErrorResponse(error);
+    if (planRes) return planRes;
     if (error || !data) {
       console.error("[POST /api/account/invitations] insert error:", error);
       return NextResponse.json(

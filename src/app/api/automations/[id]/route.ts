@@ -11,6 +11,7 @@ import {
   validateTriggerForActivation,
 } from '@/lib/automations/validate'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -140,7 +141,9 @@ export async function PATCH(
       .update(update)
       .eq('id', id)
       .eq('account_id', accountId)
-    if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 })
+    if (updErr) {
+      return planErrorResponse(updErr) ?? NextResponse.json({ error: updErr.message }, { status: 500 })
+    }
   }
 
   if (Array.isArray(body.steps)) {

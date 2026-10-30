@@ -40,6 +40,7 @@ import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
 import {
   createBroadcast,
   deliverBroadcast,
+  withBroadcastMetering,
   BroadcastError,
 } from '@/lib/whatsapp/broadcast-core';
 
@@ -77,7 +78,9 @@ export async function POST(request: Request) {
     // Fan out after the response is sent. Uses the same service-role
     // client — no request-scoped auth needed for the Meta calls or
     // the account-scoped row updates.
-    after(() => deliverBroadcast(ctx.supabase, plan));
+    after(() =>
+      deliverBroadcast(ctx.supabase, withBroadcastMetering(plan, ctx.accountId))
+    );
 
     return ok(
       {

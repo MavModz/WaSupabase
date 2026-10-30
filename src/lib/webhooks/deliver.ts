@@ -27,6 +27,8 @@ import { buildSignatureHeader } from '@/lib/webhooks/sign';
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import type { WebhookEvent } from '@/lib/webhooks/events';
 import { log } from '@/lib/log';
+import { canDeliverWebhooks } from '@/lib/entitlements/gates';
+import { getEntitlements } from '@/lib/entitlements/resolve';
 
 /** Per-endpoint HTTP timeout. Kept short — this runs in `after()`. */
 export const DELIVERY_TIMEOUT_MS = 5000;
@@ -51,6 +53,9 @@ export async function dispatchWebhookEvent(
   data: unknown
 ): Promise<void> {
   try {
+    // Locked accounts stop delivering; restricted ones keep delivering (R8).
+    if (!canDeliverWebhooks(await getEntitlements(accountId))) return;
+
     const { data: rows, error } = await db
       .from('webhook_endpoints')
       .select('id, url, secret')

@@ -16,14 +16,20 @@ import {
   RATE_LIMITS,
 } from '@/lib/rate-limit'
 import { getT } from '@/lib/i18n/translate'
+import { createBroadcastMeter } from '@/lib/entitlements/metering'
 
 const t = getT('Api')
 
 interface BroadcastResult {
   phone: string
-  status: 'sent' | 'failed'
+  /**
+   * 'skipped' only with entitlements on: not sent because of the plan.
+   * The caller leaves that recipient pending, so Resume can send it.
+   */
+  status: 'sent' | 'failed' | 'skipped'
   whatsapp_message_id?: string
   error?: string
+  code?: string
 }
 
 /**
@@ -166,6 +172,15 @@ export async function POST(request: Request) {
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
+    let skippedCount = 0
+
+    // Null with entitlements off. One reservation covers the batch: the
+    // client sends 10 at a time, which is REQ-X5's overshoot bound.
+    const meter = createBroadcastMeter(accountId, recipients.length)
+    const validLeft = meter
+      ? recipients.filter((r) => isValidE164(sanitizePhoneForMeta(r.phone))).length
+      : 0
+    let metered = 0
 
     for (const recipient of recipients) {
       const sanitized = sanitizePhoneForMeta(recipient.phone)
@@ -178,6 +193,19 @@ export async function POST(request: Request) {
         })
         failedCount++
         continue
+      }
+
+      if (meter) {
+        if (!(await meter.take(validLeft - metered))) {
+          results.push({
+            phone: recipient.phone,
+            status: 'skipped',
+            code: meter.code ?? 'plan_limit_reached',
+          })
+          skippedCount++
+          continue
+        }
+        metered++
       }
 
       // Retry with phone variants on "not in allowed list" so numbers
@@ -221,6 +249,7 @@ export async function POST(request: Request) {
         })
         sentCount++
       } else {
+        meter?.refund()
         console.error(
           `Failed to send broadcast to ${recipient.phone}:`,
           lastError
@@ -234,11 +263,19 @@ export async function POST(request: Request) {
       }
     }
 
+    await meter?.settle()
+
+    // Fail closed: the allowance couldn't be read, and nothing went out.
+    if (meter?.failed && sentCount === 0) {
+      return NextResponse.json({ error: t('plan.meteringUnavailable') }, { status: 503 })
+    }
+
     return NextResponse.json({
       success: true,
       total: recipients.length,
       sent: sentCount,
       failed: failedCount,
+      ...(meter ? { skipped: skippedCount } : {}),
       results,
     })
   } catch (error) {

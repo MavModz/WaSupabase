@@ -47,9 +47,11 @@ SELECT is(
       -- service_only: written and read only by the service role.
       --   automation_pending_executions (006) — engine wait queue
       --   pending_message_statuses (054)      — webhook status buffer
+      --   entitlement_audit_log (066)         — operator audit trail
       AND c.relname <> ALL (ARRAY[
         'automation_pending_executions',
-        'pending_message_statuses'
+        'pending_message_statuses',
+        'entitlement_audit_log'
       ])
     ORDER BY 1
   ),
@@ -65,12 +67,12 @@ SELECT is(
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
-      AND c.relname IN ('automation_pending_executions', 'pending_message_statuses')
+      AND c.relname IN ('automation_pending_executions', 'entitlement_audit_log', 'pending_message_statuses')
       AND c.relrowsecurity
       AND NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid)
     ORDER BY 1
   ),
-  ARRAY['automation_pending_executions', 'pending_message_statuses']::text[],
+  ARRAY['automation_pending_executions', 'entitlement_audit_log', 'pending_message_statuses']::text[],
   'service-role-only tables exist, have RLS enabled and expose no policy'
 );
 

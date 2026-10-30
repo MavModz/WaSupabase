@@ -9,6 +9,7 @@ import {
   validateTriggerForActivation,
 } from '@/lib/automations/validate'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -122,6 +123,8 @@ export async function POST(request: Request) {
     .select()
     .single()
 
+  const planRes = planErrorResponse(insertErr)
+  if (planRes) return planRes
   if (insertErr || !automation) {
     return NextResponse.json(
       { error: insertErr?.message ?? t('common.insertFailed') },

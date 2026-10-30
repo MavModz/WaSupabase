@@ -78,3 +78,10 @@ jobs:
       # Local stack only — never add --linked or a remote --db-url here.
       - name: Run pgTAP database tests
         run: supabase test db
+
+      # pgTAP runs on one session, so it can't show parallel requests
+      # respecting a limit. This uses real parallel connections (REQ-X4).
+      - name: Entitlements concurrency check
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: sh supabase/ci/entitlements-concurrency.sh

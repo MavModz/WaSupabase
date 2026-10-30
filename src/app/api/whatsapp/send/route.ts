@@ -13,6 +13,8 @@ import {
 } from '@/lib/whatsapp/send-message'
 import { isUniqueViolation } from '@/lib/contacts/dedupe'
 import { getT } from '@/lib/i18n/translate'
+import { assertCanSendMessage } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 const t = getT('Api')
 
@@ -44,6 +46,9 @@ export async function POST(request: Request) {
     if (!limit.success) {
       return rateLimitResponse(limit)
     }
+
+    // A locked account can't reply; a restricted one still can (section 7).
+    assertCanSendMessage(await getEntitlements(accountId))
 
     const body = await request.json()
     const {

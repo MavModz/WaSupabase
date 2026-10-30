@@ -11,6 +11,8 @@ import { logAiUsage } from '@/lib/ai/usage'
 import { supabaseAdmin } from '@/lib/ai/admin-client'
 import { AiError } from '@/lib/ai/types'
 import { getT } from '@/lib/i18n/translate'
+import { assertCanDraft } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 const t = getT('Api')
 
@@ -26,6 +28,9 @@ const t = getT('Api')
 export async function POST(request: Request) {
   try {
     const { supabase, accountId, userId } = await requireRole('agent')
+
+    // Drafts: restricted allowed, locked blocked (section 7).
+    assertCanDraft(await getEntitlements(accountId))
 
     const userLimit = await checkRateLimit(`ai-draft:${userId}`, RATE_LIMITS.aiDraft)
     if (!userLimit.success) return rateLimitResponse(userLimit)

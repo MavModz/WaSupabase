@@ -8,6 +8,8 @@ import { buildSystemPrompt } from '@/lib/ai/defaults'
 import { latestUserMessage } from '@/lib/ai/query'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
 import { getT } from '@/lib/i18n/translate'
+import { assertCanDraft } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 const t = getT('Api')
 
@@ -27,6 +29,9 @@ const MAX_TURNS = 20
 export async function POST(request: Request) {
   try {
     const { supabase, accountId, userId } = await requireRole('agent')
+
+    // Same rule as drafts: a locked account makes no AI calls (section 7).
+    assertCanDraft(await getEntitlements(accountId))
 
     const limit = await checkRateLimit(`ai-playground:${userId}`, RATE_LIMITS.aiDraft)
     if (!limit.success) return rateLimitResponse(limit)

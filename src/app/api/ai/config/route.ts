@@ -12,6 +12,7 @@ import { AiError, type AiProvider } from '@/lib/ai/types'
 import { normalizeOpenAiCompatibleBaseUrl } from '@/lib/ai/providers/openai-compatible'
 import { canReuseStoredAiKey } from '@/lib/ai/stored-key'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -247,6 +248,8 @@ export async function POST(request: Request) {
         .update(encryptedKey ? { ...shared, api_key: encryptedKey } : shared)
         .eq('account_id', accountId)
       if (upErr) {
+        const planRes = planErrorResponse(upErr)
+        if (planRes) return planRes
         console.error('[ai/config POST] update error:', upErr)
         return NextResponse.json(
           { error: t('ai.saveConfigFailed') },
@@ -261,6 +264,8 @@ export async function POST(request: Request) {
         ...shared,
       })
       if (insErr) {
+        const planRes = planErrorResponse(insErr)
+        if (planRes) return planRes
         console.error('[ai/config POST] insert error:', insErr)
         return NextResponse.json(
           { error: t('ai.saveConfigFailed') },

@@ -10,6 +10,17 @@ import {
 import type { AutomationContext } from '@/lib/automations/engine'
 import { log, requestIdOf, withLogContext } from '@/lib/log'
 import { rateLimitBackend } from '@/lib/rate-limit'
+import { isEntitlementsEnabled } from '@/lib/entitlements/config'
+import { canRunEngines } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
+
+/**
+ * How long a due wait of a restricted or locked account is pushed back
+ * (R4: waits don't resume). Moving it off the scan keeps a paused account
+ * from filling the 50-row page and starving everyone else, and it resumes
+ * within this long of the state being restored.
+ */
+const PAUSED_WAIT_RETRY_MS = 60 * 60 * 1000
 
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
@@ -56,8 +67,25 @@ async function sweepRateLimits() {
   }
 }
 
+/**
+ * Materialise lazy plan transitions and apply due downgrades (067). Best
+ * effort: enforcement reads the lazy state, so a failed sweep delays the
+ * audit rows and deactivations, and never affects the cron's own work.
+ */
+async function sweepEntitlements() {
+  if (!isEntitlementsEnabled()) return
+  try {
+    const { data, error } = await supabaseAdmin().rpc('entitlements_run_due')
+    if (error) throw error
+    log.info('entitlements.swept', { result: data })
+  } catch (err) {
+    log.error('entitlements.sweep_failed', { err })
+  }
+}
+
 async function runCron() {
   await sweepRateLimits()
+  await sweepEntitlements()
 
   // Close out wait_for_reply runs whose 24h reply window lapsed. The
   // webhook already refuses to resume them; this just settles their
@@ -81,7 +109,27 @@ async function runCron() {
   if (!due || due.length === 0) return NextResponse.json({ processed: 0, expired, requeued })
 
   let processed = 0
+  // One lookup per account per run. Empty, and unused, with the switch off.
+  const pausedByAccount = new Map<string, boolean>()
   for (const row of due) {
+    if (isEntitlementsEnabled()) {
+      const accountId = row.account_id as string
+      let paused = pausedByAccount.get(accountId)
+      if (paused === undefined) {
+        paused = !canRunEngines(await getEntitlements(accountId))
+        pausedByAccount.set(accountId, paused)
+      }
+      if (paused) {
+        await admin
+          .from('automation_pending_executions')
+          .update({ run_at: new Date(Date.now() + PAUSED_WAIT_RETRY_MS).toISOString() })
+          .eq('id', row.id as string)
+          .eq('account_id', accountId)
+          .eq('status', 'pending')
+        continue
+      }
+    }
+
     if (!(await claimPendingExecution(row.id as string))) continue
 
     await resumePendingExecution({

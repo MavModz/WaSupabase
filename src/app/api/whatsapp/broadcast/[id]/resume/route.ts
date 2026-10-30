@@ -22,6 +22,7 @@ import {
   BroadcastError,
   deliverBroadcast,
   finalizeBroadcastStatus,
+  withBroadcastMetering,
 } from '@/lib/whatsapp/broadcast-core';
 import {
   claimBroadcastDelivery,
@@ -38,6 +39,9 @@ import {
   RATE_LIMITS,
 } from '@/lib/rate-limit';
 import { getT } from '@/lib/i18n/translate';
+import { assertCanBroadcast } from '@/lib/entitlements/gates';
+import { getEntitlements } from '@/lib/entitlements/resolve';
+import { isEntitlementsEnabled } from '@/lib/entitlements/config';
 
 const t = getT('Api');
 
@@ -61,6 +65,9 @@ export async function POST(
       RATE_LIMITS.broadcast
     );
     if (!limit.success) return rateLimitResponse(limit);
+
+    // Restricted and locked accounts can't resume (R3).
+    assertCanBroadcast(await getEntitlements(accountId));
 
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
@@ -93,6 +100,11 @@ export async function POST(
     );
 
     await markBroadcastSending(supabase, id);
+    if (isEntitlementsEnabled()) {
+      // This pass is the "resume" the pause was waiting for. If the
+      // allowance runs out again, deliverBroadcast sets it back.
+      await supabase.from('broadcasts').update({ paused_reason: null }).eq('id', id);
+    }
     claimedId = null; // ownership passes to the after() block
 
     // Service-role client for the fan-out: it outlives the request, and
@@ -101,7 +113,7 @@ export async function POST(
     const admin = supabaseAdmin();
     after(async () => {
       try {
-        await deliverBroadcast(admin, plan);
+        await deliverBroadcast(admin, withBroadcastMetering(plan, accountId));
       } catch (err) {
         console.error(
           '[broadcast-resume] delivery threw:',

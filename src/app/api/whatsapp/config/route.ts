@@ -30,6 +30,7 @@ import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { resolveVerifyTokenForSave } from '@/lib/whatsapp/verify-token'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { getT } from '@/lib/i18n/translate'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 const t = getT('Api')
 
@@ -549,6 +550,12 @@ export async function POST(request: Request) {
       }
     }
 
+    // The trial-claim trigger (068) ended this account's trial if another
+    // account already connected the number (REQ-T2). Absent otherwise.
+    const ent = await getEntitlements(accountId)
+    const trialEnded =
+      ent?.state_reason === 'trial_number_reused' ? { trial_ended: true } : {}
+
     if (registrationError) {
       // Save succeeded but the number isn't actually live. Return
       // 200 with a structured error so the UI can show the specific
@@ -561,6 +568,7 @@ export async function POST(request: Request) {
         error: registrationError,
         meta: registrationMeta,
         phone_info: phoneInfo,
+        ...trialEnded,
       })
     }
 
@@ -574,6 +582,7 @@ export async function POST(request: Request) {
       // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
       phone_info: phoneInfo,
+      ...trialEnded,
     })
   } catch (error) {
     if (error instanceof UnauthorizedError || error instanceof ForbiddenError) {

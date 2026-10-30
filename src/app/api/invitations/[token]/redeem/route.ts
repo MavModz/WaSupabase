@@ -29,10 +29,20 @@ import {
 } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import { getT } from "@/lib/i18n/translate";
+import { parsePlanError } from "@/lib/entitlements/parse";
 
 const t = getT("Api");
 
 function rpcErrorToResponse(err: PostgrestError): NextResponse {
+  // Workspace at its seat maximum (068). The move rolled back, so the
+  // invite stays valid and can be redeemed once a seat is free (AC-R1-3).
+  const planDetail = parsePlanError(err);
+  if (planDetail) {
+    return NextResponse.json(
+      { ...planDetail, error: t("plan.workspaceFull") },
+      { status: 402 },
+    );
+  }
   if (err.code === "42501") {
     return NextResponse.json({ error: err.message }, { status: 401 });
   }

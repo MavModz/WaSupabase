@@ -4,6 +4,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -116,7 +117,7 @@ export async function POST(
     .select()
     .maybeSingle()
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return planErrorResponse(error) ?? NextResponse.json({ error: error.message }, { status: 500 })
   }
 
   if (status !== 'active') {

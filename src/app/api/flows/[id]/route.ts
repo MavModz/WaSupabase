@@ -5,6 +5,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { MAX_FLOW_TIMEOUT_HOURS } from '@/lib/flows/types'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -160,7 +161,7 @@ export async function PUT(
       p_flow: flowPatch,
     })
     if (graphErr) {
-      return NextResponse.json({ error: graphErr.message }, { status: 500 })
+      return planErrorResponse(graphErr) ?? NextResponse.json({ error: graphErr.message }, { status: 500 })
     }
   } else {
     const { error: updErr } = await admin
@@ -168,7 +169,7 @@ export async function PUT(
       .update({ ...flowPatch, updated_at: new Date().toISOString() })
       .eq('id', id)
     if (updErr) {
-      return NextResponse.json({ error: updErr.message }, { status: 500 })
+      return planErrorResponse(updErr) ?? NextResponse.json({ error: updErr.message }, { status: 500 })
     }
   }
 

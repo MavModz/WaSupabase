@@ -16,6 +16,7 @@ import {
   serializeWebhookEndpoint,
   checkWebhookUrl,
 } from '@/lib/webhooks/endpoints';
+import { fromPostgrestError } from '@/lib/entitlements/errors';
 
 export async function GET(
   request: Request,
@@ -109,6 +110,8 @@ export async function PATCH(
       .maybeSingle();
 
     if (error) {
+      const planErr = fromPostgrestError(error);
+      if (planErr) throw planErr;
       console.error('[api/v1/webhooks] update error:', error);
       return fail('internal', 'Failed to update webhook', 500);
     }

@@ -23,6 +23,8 @@ import { resumeAwaitingReply, runAutomationsForTrigger } from '@/lib/automations
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { canMirrorInboundMedia } from '@/lib/entitlements/resolve'
+import { parsePlanError } from '@/lib/entitlements/parse'
 import {
   applyBroadcastRecipientStatus,
   flagBroadcastReply,
@@ -40,6 +42,9 @@ import { log, requestIdOf, withLogContext } from '@/lib/log'
 // plan's ceiling). Tune as needed.
 export const maxDuration = 60
 
+// Message types that carry an attachment `verifyAndBuildUrl` can mirror.
+const INBOUND_MEDIA_TYPES = new Set(['image', 'video', 'audio', 'document', 'sticker'])
+
 // Lazy-initialized to avoid build-time crash when env vars are missing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _adminClient: any = null
@@ -47,7 +52,11 @@ function supabaseAdmin() {
   if (!_adminClient) {
     _adminClient = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      // Exempts contacts created by an inbound message from the plan's
+      // contact limit (D-13, migration 068). Only this client sends it,
+      // and the trigger also requires a verified service_role JWT.
+      { global: { headers: { 'x-wacrm-inbound': '1' } } }
     )
   }
   return _adminClient
@@ -641,12 +650,19 @@ async function processMessage(
     return
   }
 
+  // Above 110% of the plan's storage (D-17) media stays on the Meta proxy
+  // instead of being mirrored. The message itself is always stored
+  // (REQ-X11), and the check fails open, so this never drops anything.
+  const mirrorAllowed =
+    mirrorMedia &&
+    (!INBOUND_MEDIA_TYPES.has(message.type) || (await canMirrorInboundMedia(accountId)))
+
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(
       message,
       accessToken,
-      mirrorMedia ? { accountId } : null
+      mirrorAllowed ? { accountId } : null
     )
 
   // Resolve swipe-reply context if present. A missing parent is fine —
@@ -1263,21 +1279,35 @@ async function findOrCreateContact(
   // stored with '' — which migration 022's partial unique index
   // tolerates, and migration 040's BSUID index is what keeps them
   // unique instead.
+  const newContactRow = {
+    account_id: accountId,
+    user_id: configOwnerUserId,
+    phone: identity.phone,
+    name: identityDisplayName(identity),
+    wa_user_id: identity.waUserId,
+    wa_parent_user_id: identity.waParentUserId,
+    wa_username: identity.waUsername,
+  }
   const { data: newContact, error: createError } = await supabaseAdmin()
     .from('contacts')
-    .insert({
-      account_id: accountId,
-      user_id: configOwnerUserId,
-      phone: identity.phone,
-      name: identityDisplayName(identity),
-      wa_user_id: identity.waUserId,
-      wa_parent_user_id: identity.waParentUserId,
-      wa_username: identity.waUsername,
-    })
+    .insert(newContactRow)
     .select()
     .single()
 
   if (createError) {
+    // The client's exemption header didn't reach Postgres (a gateway may
+    // strip it). Returning null here would drop the message, which no plan
+    // may do (REQ-X11, D-13), so create it through the exempt RPC.
+    if (parsePlanError(createError)) {
+      log.warn('webhook.inbound_exemption_header_lost', { accountId })
+      const { data: exempt, error: exemptError } = await supabaseAdmin().rpc(
+        'ent_create_inbound_contact',
+        { p_row: newContactRow }
+      )
+      if (!exemptError && exempt) return { contact: exempt, wasCreated: true }
+      log.error('webhook.inbound_exempt_create_failed', { err: exemptError })
+    }
+
     // Lost a race: a concurrent inbound delivery (or another path)
     // created this contact between our lookup and insert, and a unique
     // index (022's phone, or 040's BSUID) rejected the duplicate.
