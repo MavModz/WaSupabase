@@ -16,6 +16,7 @@
 
 import { NextResponse } from 'next/server';
 import type { RateLimitResult } from '@/lib/rate-limit';
+import { log } from '@/lib/log';
 
 export type ApiErrorCode =
   | 'unauthorized' // missing / malformed / unknown / revoked / expired key
@@ -117,7 +118,9 @@ export function fail(
 /**
  * Map any thrown value to the failure envelope. `ApiError` keeps its
  * code/status/headers; anything else collapses to a generic 500 so we
- * never leak internal error text onto the public wire.
+ * never leak internal error text onto the public wire. The 500 adds an
+ * opaque `error.error_id` (additive to the envelope) that matches the
+ * server log line, so an integrator can quote it in a support request.
  */
 export function toApiErrorResponse(err: unknown): NextResponse {
   if (err instanceof ApiError) {
@@ -126,9 +129,16 @@ export function toApiErrorResponse(err: unknown): NextResponse {
       { status: err.status, headers: err.headers }
     );
   }
-  console.error('[api/v1] uncategorized error:', err);
+  const errorId = crypto.randomUUID();
+  log.error('api_v1.unhandled_error', { errorId, err });
   return NextResponse.json(
-    { error: { code: 'internal', message: 'Internal server error' } },
+    {
+      error: {
+        code: 'internal',
+        message: 'Internal server error',
+        error_id: errorId,
+      },
+    },
     { status: 500 }
   );
 }

@@ -31,6 +31,19 @@ is included.
 > the healthcheck don't target. Compose pins it to 3000 for that
 > reason.
 
+`GET /api/health` is a public endpoint for uptime monitors and load
+balancers: `200 {"status":"ok","checks":{"db":"ok"}}` when the app can
+reach the database, `503` with `"db":"error"` when it can't (the reason
+goes to the container log as `health.db_failed`). It needs migration
+063. The compose healthcheck still probes `/`, so a database outage
+doesn't flip the container to unhealthy; point your monitor at
+`/api/health` for that.
+
+Server logs are one JSON line per event on stdout/stderr (`docker
+compose logs app`), each with an `event` name and, for request work, a
+`requestId` that matches the response's `X-Request-Id` header. Set
+`LOG_LEVEL` / `LOG_FORMAT` in `.env.local` to tune them.
+
 ## Build-time vs runtime variables
 
 - `NEXT_PUBLIC_*` variables are **inlined into the client bundle at

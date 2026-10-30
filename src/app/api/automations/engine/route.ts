@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     return toErrorResponse(err)
   }
 
-  const limit = checkRateLimit(`automation-trigger:${userId}`, RATE_LIMITS.automationTrigger)
+  const limit = await checkRateLimit(`automation-trigger:${userId}`, RATE_LIMITS.automationTrigger)
   if (!limit.success) return rateLimitResponse(limit)
 
   const body = await request.json().catch(() => null)

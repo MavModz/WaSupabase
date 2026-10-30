@@ -69,6 +69,15 @@ Every response uses one of two shapes:
 Branch on `error.code` (stable); `error.message` is for humans and
 may be reworded.
 
+A `500 internal` error also carries `error.error_id`, an opaque id that
+matches the server's log line for that failure. Quote it when reporting
+a problem; it is not meaningful otherwise. Every response (success or
+failure) also has an `X-Request-Id` header.
+
+```jsonc
+{ "error": { "code": "internal", "message": "Internal server error", "error_id": "8b0c…" } }
+```
+
 | Status | `code`         | Meaning                                          |
 | ------ | -------------- | ------------------------------------------------ |
 | 401    | `unauthorized` | Missing / malformed / unknown / revoked / expired key |
@@ -87,12 +96,12 @@ Requests are limited **per key**: **120 requests per minute**. On a
 - `Retry-After` — seconds until the window resets
 - `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 
-> The limiter is in-memory and **per process**. A single-instance
-> deploy (the common case for a self-hosted fork) is fine as-is. If
-> you scale to multiple instances, swap the limiter for a shared
-> store (Redis/Upstash) — see the note at the top of
-> `src/lib/rate-limit.ts`. The limit is otherwise unenforced across
-> instances.
+> By default the limiter is in-memory and **per process**. A
+> single-instance deploy (the common case for a self-hosted fork) is
+> fine as-is. A multi-instance or serverless deploy should set
+> `RATE_LIMIT_BACKEND=postgres` (migration 065), which shares the
+> counters through the database; otherwise the limit is enforced per
+> instance only. See the note at the top of `src/lib/rate-limit.ts`.
 
 ## Endpoints
 

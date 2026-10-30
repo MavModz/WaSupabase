@@ -114,6 +114,63 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
   });
 });
 
+describe("middleware — request id", () => {
+  it("mints an id, forwards it to the route and echoes it on the response", async () => {
+    mockUser = { id: "user-1" };
+
+    const res = await middleware(new NextRequest("https://app.test/dashboard"));
+
+    const id = res.headers.get("x-request-id");
+    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    // NextResponse.next({ request }) encodes forwarded request headers
+    // as x-middleware-request-<name>; this is what the route handler sees.
+    expect(res.headers.get("x-middleware-request-x-request-id")).toBe(id);
+  });
+
+  it("keeps a well-formed inbound id", async () => {
+    const res = await middleware(
+      new NextRequest("https://app.test/api/health", {
+        headers: { "x-request-id": "lb-trace-0001" },
+      }),
+    );
+    expect(res.headers.get("x-request-id")).toBe("lb-trace-0001");
+    expect(res.headers.get("x-middleware-request-x-request-id")).toBe("lb-trace-0001");
+  });
+
+  it("replaces a malformed inbound id", async () => {
+    const res = await middleware(
+      new NextRequest("https://app.test/api/health", {
+        headers: { "x-request-id": "bad id with spaces" },
+      }),
+    );
+    expect(res.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("is still forwarded after a session refresh rebuilds the response", async () => {
+    mockUser = { id: "user-1" };
+    refreshedCookies = [ROTATED];
+
+    const res = await middleware(new NextRequest("https://app.test/inbox"));
+
+    const id = res.headers.get("x-request-id");
+    expect(id).toBeTruthy();
+    expect(res.headers.get("x-middleware-request-x-request-id")).toBe(id);
+    expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
+  });
+
+  it("is on redirects and on the API 401", async () => {
+    const redirect = await middleware(new NextRequest("https://app.test/dashboard"));
+    expect(redirect.status).toBe(307);
+    expect(redirect.headers.get("x-request-id")).toBeTruthy();
+
+    const unauthorized = await middleware(
+      new NextRequest("https://app.test/api/whatsapp/send"),
+    );
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("x-request-id")).toBeTruthy();
+  });
+});
+
 describe("middleware — every dashboard route requires a session", () => {
   // Read the route group rather than hard-coding a list, so a new page added
   // under src/app/(dashboard)/ fails here until it is added to

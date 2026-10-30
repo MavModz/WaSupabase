@@ -25,7 +25,7 @@ export async function GET() {
   try {
     const { supabase, accountId, userId } = await getCurrentAccount()
 
-    const limit = checkRateLimit(`whatsapp-health:${userId}`, RATE_LIMITS.whatsappHealth)
+    const limit = await checkRateLimit(`whatsapp-health:${userId}`, RATE_LIMITS.whatsappHealth)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { data: config } = await supabase

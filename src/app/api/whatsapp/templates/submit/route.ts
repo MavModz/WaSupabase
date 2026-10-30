@@ -127,7 +127,7 @@ export async function POST(request: Request) {
     // local upsert was refused.
     const { supabase, accountId, userId } = await requireRole('admin')
 
-    const limit = checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
+    const limit = await checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
     if (!limit.success) return rateLimitResponse(limit)
 
     let payload: TemplatePayload

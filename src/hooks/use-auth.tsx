@@ -188,6 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     lastFetchedUserIdRef.current = userId;
     try {
       let data: ProfileRow | null = null;
+      let healTried = false;
       for (let attempt = 1; ; attempt++) {
         const result = await supabase
           .from("profiles")
@@ -199,6 +200,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (!result.error) {
           data = result.data;
+          if (!data && !healTried) {
+            // No profile row: signup provisioning failed (the trigger
+            // records it and lets the signup through). ensure_my_account
+            // (migration 064) provisions only a user with no profile, so
+            // it can't move anyone; on success, read the row again. Once
+            // per fetch, so the alert's Retry also retries the heal.
+            healTried = true;
+            const { error: healErr } = await supabase.rpc("ensure_my_account");
+            if (!healErr) continue;
+            console.error("[AuthProvider] ensure_my_account failed:", {
+              message: healErr.message,
+              code: healErr.code,
+            });
+          }
           break;
         }
 

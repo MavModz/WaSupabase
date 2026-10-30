@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRunTimeout, markRunTimedOut } from '@/lib/flows/timeout'
+import { log, requestIdOf, withLogContext } from '@/lib/log'
 
 const TIMEOUT_SWEEP_PAGE_SIZE = 500
 const TIMEOUT_SWEEP_MAX_PAGES = 20
@@ -54,6 +55,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  return withLogContext({ requestId: requestIdOf(request), route: 'flows.cron' }, sweepTimedOutRuns)
+}
+
+async function sweepTimedOutRuns() {
   const admin = supabaseAdmin()
   const now = new Date()
 
@@ -64,7 +69,7 @@ export async function GET(request: Request) {
       p_limit: TIMEOUT_SWEEP_PAGE_SIZE,
     })
     if (error) {
-      console.error('[flows-cron] timed-out run scan failed:', error.message)
+      log.error('flows.cron.scan_failed', { swept, err: error })
       return NextResponse.json({ error: error.message, swept }, { status: 500 })
     }
 
@@ -82,5 +87,6 @@ export async function GET(request: Request) {
     if (rows.length < TIMEOUT_SWEEP_PAGE_SIZE || sweptThisPage === 0) break
   }
 
+  log.info('flows.cron.done', { swept })
   return NextResponse.json({ swept })
 }

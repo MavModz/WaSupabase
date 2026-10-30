@@ -169,7 +169,7 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind IN ('r', 'p')
-      AND c.relname <> 'pending_message_statuses'
+      AND c.relname NOT IN ('pending_message_statuses', 'signup_provisioning_failures', 'rate_limit_buckets')
       AND NOT has_table_privilege('authenticated', c.oid, 'SELECT')
   ) THEN
     RAISE EXCEPTION 'authenticated lacks SELECT on a public table — migration 062 did not apply';
@@ -180,6 +180,45 @@ BEGIN
   END IF;
   IF has_table_privilege('authenticated', 'public.pending_message_statuses', 'SELECT') THEN
     RAISE EXCEPTION 'pending_message_statuses must be service-role only (054 / 062)';
+  END IF;
+
+  -- 063: GET /api/health pings the DB through this; service role only.
+  IF to_regprocedure('public.health_ping()') IS NULL THEN
+    RAISE EXCEPTION 'public.health_ping() is missing — migration 063 did not apply';
+  END IF;
+  IF has_function_privilege('anon', 'public.health_ping()', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.health_ping()', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.health_ping()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'health_ping() must be executable by service_role only (063)';
+  END IF;
+
+  -- 064: signup provisioning failure log + self-heal.
+  IF to_regclass('public.signup_provisioning_failures') IS NULL
+     OR to_regprocedure('public.ensure_my_account()') IS NULL
+     OR to_regprocedure('public.provision_personal_account(uuid)') IS NULL THEN
+    RAISE EXCEPTION 'signup provisioning objects are missing — migration 064 did not apply';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.signup_provisioning_failures', 'SELECT')
+     OR has_table_privilege('anon', 'public.signup_provisioning_failures', 'SELECT') THEN
+    RAISE EXCEPTION 'signup_provisioning_failures must be service-role only (064)';
+  END IF;
+  IF has_function_privilege('anon', 'public.ensure_my_account()', 'EXECUTE')
+     OR NOT has_function_privilege('authenticated', 'public.ensure_my_account()', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.provision_personal_account(uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'provisioning function grants are wrong (064)';
+  END IF;
+
+  -- 065: shared rate-limit counters, service role only.
+  IF to_regclass('public.rate_limit_buckets') IS NULL
+     OR to_regprocedure('public.rate_limit_hit(text,integer,integer)') IS NULL
+     OR to_regprocedure('public.rate_limit_sweep()') IS NULL THEN
+    RAISE EXCEPTION 'rate limit objects are missing — migration 065 did not apply';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.rate_limit_buckets', 'SELECT')
+     OR has_function_privilege('authenticated', 'public.rate_limit_hit(text,integer,integer)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.rate_limit_hit(text,integer,integer)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.rate_limit_hit(text,integer,integer)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'rate limit objects must be service-role only (065)';
   END IF;
 
   RAISE NOTICE 'schema verification passed';

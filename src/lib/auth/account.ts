@@ -31,6 +31,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { hasMinRole, isAccountRole, type AccountRole } from "./roles";
 import { getT } from "@/lib/i18n/translate";
+import { log } from "@/lib/log";
 
 const t = getT("LibErrors.auth");
 
@@ -67,14 +68,20 @@ export class ForbiddenError extends Error {
  *
  * Unknown errors collapse to 500 with the generic message — we
  * never leak `err.message` for non-classified errors to keep
- * server internals out of the wire.
+ * server internals out of the wire. Instead the 500 carries an
+ * opaque `error_id` that is also on the server log line, so a user's
+ * bug report ("error_id: …") leads straight to the stack.
  */
 export function toErrorResponse(err: unknown): NextResponse {
   if (err instanceof UnauthorizedError || err instanceof ForbiddenError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
-  console.error("[toErrorResponse] uncategorized error:", err);
-  return NextResponse.json({ error: t("internal") }, { status: 500 });
+  const errorId = crypto.randomUUID();
+  log.error("http.unhandled_error", { errorId, err });
+  return NextResponse.json(
+    { error: t("internal"), error_id: errorId },
+    { status: 500 },
+  );
 }
 
 // ------------------------------------------------------------
@@ -117,19 +124,37 @@ export async function getCurrentAccount(): Promise<AccountContext> {
     throw new UnauthorizedError();
   }
 
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("account_id, account_role")
-    .eq("user_id", user.id)
-    .maybeSingle();
+  const readProfile = () =>
+    supabase
+      .from("profiles")
+      .select("account_id, account_role")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+  let { data, error } = await readProfile();
+
+  if (!error && !data) {
+    // No profile row at all: signup provisioning failed (handle_new_user
+    // records it in signup_provisioning_failures and lets the signup
+    // through). ensure_my_account (migration 064) provisions the caller
+    // only when they have no profile, so this never moves anyone; on
+    // success read again and carry on as if signup had worked.
+    const { error: healErr } = await supabase.rpc("ensure_my_account");
+    if (healErr) {
+      log.error("account.self_heal_failed", { userId: user.id, err: healErr });
+    } else {
+      log.warn("account.self_healed", { userId: user.id });
+      ({ data, error } = await readProfile());
+    }
+  }
 
   if (error) {
     console.error("[getCurrentAccount] profile fetch error:", error);
     throw new ForbiddenError(t("loadContext"));
   }
   if (!data || !data.account_id || !data.account_role) {
-    // Pre-migration profile, or a manual insert that skipped the
-    // signup trigger. The user is authenticated but the app has
+    // Still no usable profile after the self-heal above (or a
+    // pre-migration row). The user is authenticated but the app has
     // no way to scope their queries — treat as forbidden.
     throw new ForbiddenError(t("notLinked"));
   }

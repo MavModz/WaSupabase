@@ -1,27 +1,38 @@
 /**
- * In-memory per-key rate limiter.
+ * Per-key rate limiter with a pluggable backend.
  *
  * Fixed-window counter (not token bucket): every identifier gets a
- * fresh N-request budget each window. Simple, allocation-light, and
- * fine for a single-instance VPS — which is how forkers of this
- * template will usually deploy.
+ * fresh N-request budget each window. `checkRateLimit` is async and
+ * every call site awaits it; the result shape is the same for both
+ * backends.
  *
- * Trade-off: a single Node process holds the Map, so horizontal scale
- * (multiple regions, multiple Hostinger nodes, Vercel serverless fan-
- * out) silently defeats the limit. If you scale beyond one instance,
- * swap the `check` implementation for Redis / Upstash / Cloudflare
- * Durable Objects keeping the same return shape. The call sites won't
- * change.
+ * Backends (env `RATE_LIMIT_BACKEND`):
+ *   - `memory` (default): a Map in this Node process. Fine for a
+ *     single-instance VPS/Docker deploy, which is how forkers of this
+ *     template usually run. Horizontal scale (several containers,
+ *     Vercel serverless fan-out) silently multiplies every budget.
+ *   - `postgres`: one atomic upsert per check through the
+ *     `rate_limit_hit` RPC (migration 065), shared by every instance.
+ *     Set this for any multi-instance or serverless deploy.
+ *
+ * Failure mode (postgres): if the RPC errors or takes longer than
+ * SHARED_TIMEOUT_MS, the check falls back to the in-memory counter for
+ * that call and logs `rate_limit.backend_error` (at most once a
+ * minute). Limits therefore degrade to per-instance instead of either
+ * vanishing (fail-open) or locking every user out (fail-closed).
  *
  * Memory: entries are ~50 bytes each. With LIGHT_SWEEP below, expired
  * keys get cleared opportunistically on every ~1 000th call, so a
  * healthy instance stays in the low-MB range even with thousands of
  * distinct users. No background timer — works in serverless edge
- * runtimes that don't keep timers alive across requests.
+ * runtimes that don't keep timers alive across requests. The postgres
+ * table is swept by `rate_limit_sweep()` from the automations cron.
  */
 
 import { NextResponse } from 'next/server';
+import { supabaseAdmin } from '@/lib/automations/admin-client';
 import { getT } from '@/lib/i18n/translate';
+import { log } from '@/lib/log';
 
 const t = getT('LibErrors');
 
@@ -60,7 +71,7 @@ function sweepExpired(now: number) {
   }
 }
 
-export function checkRateLimit(
+function checkMemory(
   key: string,
   { limit, windowMs }: RateLimitOptions,
 ): RateLimitResult {
@@ -90,6 +101,75 @@ export function checkRateLimit(
     reset: entry.resetAt,
     limit,
   };
+}
+
+export type RateLimitBackend = 'memory' | 'postgres';
+
+/** The configured backend; anything but `postgres` means memory. */
+export function rateLimitBackend(): RateLimitBackend {
+  return process.env.RATE_LIMIT_BACKEND?.trim().toLowerCase() === 'postgres'
+    ? 'postgres'
+    : 'memory';
+}
+
+/** Upper bound on one shared check before falling back to memory. */
+const SHARED_TIMEOUT_MS = 300;
+/** rate_limit_buckets.key is CHECKed to this length. */
+const MAX_KEY_LENGTH = 256;
+const BACKEND_ERROR_LOG_EVERY_MS = 60_000;
+let lastBackendErrorLog = 0;
+
+interface RateLimitHitRow {
+  allowed: boolean;
+  remaining: number;
+  reset_at: string;
+}
+
+async function checkShared(
+  key: string,
+  opts: RateLimitOptions,
+): Promise<RateLimitResult> {
+  try {
+    const { data, error } = await supabaseAdmin()
+      .rpc('rate_limit_hit', {
+        p_key: key.slice(0, MAX_KEY_LENGTH),
+        p_limit: opts.limit,
+        p_window_ms: opts.windowMs,
+      })
+      .abortSignal(AbortSignal.timeout(SHARED_TIMEOUT_MS));
+    if (error) throw error;
+    const row = (Array.isArray(data) ? data[0] : data) as RateLimitHitRow | null;
+    const reset = row ? Date.parse(row.reset_at) : NaN;
+    if (!row || typeof row.allowed !== 'boolean' || Number.isNaN(reset)) {
+      throw new Error('rate_limit_hit returned an unexpected shape');
+    }
+    return {
+      success: row.allowed,
+      remaining: row.remaining,
+      reset,
+      limit: opts.limit,
+    };
+  } catch (err) {
+    const now = Date.now();
+    if (now - lastBackendErrorLog >= BACKEND_ERROR_LOG_EVERY_MS) {
+      lastBackendErrorLog = now;
+      log.error('rate_limit.backend_error', { backend: 'postgres', err });
+    }
+    return checkMemory(key, opts);
+  }
+}
+
+/**
+ * Count one request against `key` and say whether it is allowed.
+ * Always resolves (never rejects): backend trouble degrades to the
+ * in-memory counter, see the header.
+ */
+export async function checkRateLimit(
+  key: string,
+  opts: RateLimitOptions,
+): Promise<RateLimitResult> {
+  if (rateLimitBackend() === 'postgres') return checkShared(key, opts);
+  return checkMemory(key, opts);
 }
 
 /**
@@ -168,9 +248,9 @@ export const RATE_LIMITS = {
   /** Public REST API (`/api/v1/*`), keyed per API key. 120/min ≈ 2
    *  req/s sustained — comfortable for a polling integration or an
    *  automation firing on inbound events, while bounding a runaway
-   *  script. Like every bucket here it's per-process; a multi-
-   *  instance deploy needs the Redis swap described at the top of
-   *  this file (the per-key call sites don't change). */
+   *  script. Like every bucket here it's per-process unless
+   *  RATE_LIMIT_BACKEND=postgres (see the top of this file), which a
+   *  multi-instance deploy needs. */
   publicApi: { limit: 120, windowMs: 60_000 },
   /** AI draft-reply generation, per user. 20/min is generous for an
    *  agent clicking "Draft with AI" while working a thread, and bounds
@@ -202,4 +282,5 @@ export const RATE_LIMITS = {
 export function __resetRateLimitForTests() {
   buckets.clear();
   callsSinceSweep = 0;
+  lastBackendErrorLog = 0;
 }

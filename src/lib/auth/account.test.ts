@@ -21,9 +21,24 @@ interface BuilderCall {
 function makeClient(opts: {
   user: { id: string } | null;
   userErr?: unknown;
-  byTable: Record<string, { data: unknown; error: unknown }>;
+  // A list is consumed one result per query (last one repeats), for
+  // tests where the same table is read twice.
+  byTable: Record<
+    string,
+    { data: unknown; error: unknown } | { data: unknown; error: unknown }[]
+  >;
+  rpc?: (fn: string) => { data: unknown; error: unknown };
 }) {
   const calls: BuilderCall[] = [];
+  const rpcCalls: string[] = [];
+  const reads: Record<string, number> = {};
+  const resultFor = (table: string) => {
+    const queued = opts.byTable[table];
+    if (!Array.isArray(queued)) return queued ?? { data: null, error: null };
+    const i = reads[table] ?? 0;
+    reads[table] = i + 1;
+    return queued[Math.min(i, queued.length - 1)];
+  };
 
   const from = (table: string) => {
     const call: BuilderCall = { table, eqArgs: [] };
@@ -38,9 +53,7 @@ function makeClient(opts: {
         return builder;
       },
       maybeSingle() {
-        return Promise.resolve(
-          opts.byTable[table] ?? { data: null, error: null },
-        );
+        return Promise.resolve(resultFor(table));
       },
     };
     return builder;
@@ -48,7 +61,14 @@ function makeClient(opts: {
 
   return {
     calls,
+    rpcCalls,
     client: {
+      rpc: (fn: string) => {
+        rpcCalls.push(fn);
+        return Promise.resolve(
+          opts.rpc ? opts.rpc(fn) : { data: null, error: null },
+        );
+      },
       auth: {
         getUser: () =>
           Promise.resolve({
@@ -172,5 +192,98 @@ describe("getCurrentAccount", () => {
     await expect(getCurrentAccount()).rejects.toThrow(
       "Profile is not linked to an account",
     );
+  });
+});
+
+describe("toErrorResponse", () => {
+  it("passes typed auth errors through without an error_id", async () => {
+    const { toErrorResponse } = await import("./account");
+    const res = toErrorResponse(new ForbiddenError("nope"));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "nope" });
+  });
+
+  it("collapses unknown errors to a generic 500 with an error_id that is logged", async () => {
+    const { toErrorResponse } = await import("./account");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = toErrorResponse(new Error("secret internal detail"));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Internal server error");
+    expect(body.error_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.stringify(body)).not.toContain("secret internal detail");
+    // The same id is on the server log line, next to the real error.
+    const line = String(spy.mock.calls[0][0]);
+    expect(line).toContain(body.error_id);
+    expect(line).toContain("secret internal detail");
+    spy.mockRestore();
+  });
+});
+
+describe("getCurrentAccount — signup self-heal (migration 064)", () => {
+  it("provisions a user with no profile row via ensure_my_account, then resolves", async () => {
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, rpcCalls } = makeClient({
+      user: { id: "user-1" },
+      byTable: {
+        profiles: [
+          { data: null, error: null },
+          { data: { account_id: "acct-1", account_role: "owner" }, error: null },
+        ],
+        accounts: { data: { id: "acct-1", name: "Mine" }, error: null },
+      },
+      rpc: () => ({ data: "acct-1", error: null }),
+    });
+    createClient.mockReturnValue(client);
+
+    const ctx = await getCurrentAccount();
+
+    expect(rpcCalls).toEqual(["ensure_my_account"]);
+    expect(ctx.accountId).toBe("acct-1");
+    expect(ctx.role).toBe("owner");
+    expect(String(spy.mock.calls[0][0])).toContain("account.self_healed");
+    spy.mockRestore();
+  });
+
+  it("stays forbidden (and logs) when the self-heal RPC fails", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client, rpcCalls } = makeClient({
+      user: { id: "user-1" },
+      byTable: { profiles: { data: null, error: null } },
+      rpc: () => ({ data: null, error: { message: "boom", code: "XX000" } }),
+    });
+    createClient.mockReturnValue(client);
+
+    await expect(getCurrentAccount()).rejects.toThrow(
+      "Profile is not linked to an account",
+    );
+    expect(rpcCalls).toEqual(["ensure_my_account"]);
+    expect(String(spy.mock.calls[0][0])).toContain("account.self_heal_failed");
+    spy.mockRestore();
+  });
+
+  it("does not call the RPC when a profile exists", async () => {
+    const { client, rpcCalls } = makeClient({
+      user: { id: "user-1" },
+      byTable: {
+        profiles: { data: { account_id: "acct-1", account_role: "agent" }, error: null },
+        accounts: { data: { id: "acct-1", name: "Team" }, error: null },
+      },
+    });
+    createClient.mockReturnValue(client);
+    await getCurrentAccount();
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it("does not call the RPC when the profile read itself errored", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client, rpcCalls } = makeClient({
+      user: { id: "user-1" },
+      byTable: { profiles: { data: null, error: { message: "timeout" } } },
+    });
+    createClient.mockReturnValue(client);
+    await expect(getCurrentAccount()).rejects.toThrow(ForbiddenError);
+    expect(rpcCalls).toEqual([]);
+    spy.mockRestore();
   });
 });

@@ -13,6 +13,7 @@ import {
 } from '@/lib/flows/meta-send'
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { log } from '@/lib/log'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -101,14 +102,15 @@ export async function dispatchInboundToAiReply(
     // marketing blast landing 200 replies at once) so we never run the
     // owner's key past the provider's rate limit. Over the limit → skip
     // the auto-reply; the inbound still sits in the inbox for a human.
-    const acctLimit = checkRateLimit(
+    const acctLimit = await checkRateLimit(
       `ai-autoreply:${accountId}`,
       RATE_LIMITS.aiAutoReplyAccount,
     )
     if (!acctLimit.success) {
-      console.warn(
-        `[ai auto-reply] account ${accountId} hit the per-account rate limit — skipping this inbound.`,
-      )
+      log.warn('ai_auto_reply.account_rate_limited', {
+        accountId,
+        msg: 'skipping this inbound',
+      })
       return
     }
 
@@ -208,7 +210,7 @@ export async function dispatchInboundToAiReply(
       // deploy issue — e.g. `claim_ai_reply_slot` not EXECUTE-able by the
       // service role, or the migration not applied. Log it loudly: a
       // silent return makes "auto-reply never fires" undiagnosable.
-      console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr)
+      log.error('ai_auto_reply.claim_slot_failed', { accountId, err: claimErr })
       return
     }
     if (claimed !== true) return
@@ -222,7 +224,7 @@ export async function dispatchInboundToAiReply(
       aiGenerated: true,
     })
   } catch (err) {
-    console.error('[ai auto-reply] dispatch failed:', err)
+    log.error('ai_auto_reply.dispatch_failed', { err })
   }
 }
 
@@ -263,6 +265,6 @@ async function showTypingIndicator(
       messageId: inboundMessageId,
     })
   } catch (err) {
-    console.warn('[ai auto-reply] typing indicator failed (continuing):', err)
+    log.warn('ai_auto_reply.typing_indicator_failed', { msg: 'continuing', err })
   }
 }

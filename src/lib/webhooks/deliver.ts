@@ -26,6 +26,7 @@ import { decrypt } from '@/lib/whatsapp/encryption';
 import { buildSignatureHeader } from '@/lib/webhooks/sign';
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf';
 import type { WebhookEvent } from '@/lib/webhooks/events';
+import { log } from '@/lib/log';
 
 /** Per-endpoint HTTP timeout. Kept short — this runs in `after()`. */
 export const DELIVERY_TIMEOUT_MS = 5000;
@@ -79,7 +80,7 @@ export async function dispatchWebhookEvent(
     );
   } catch (err) {
     // Never let a delivery problem bubble into the webhook response.
-    console.error('[webhooks] dispatch failed:', err);
+    log.error('webhooks.dispatch_failed', { accountId, event, err });
   }
 }
 
@@ -94,7 +95,7 @@ async function deliverOne(
   // loopback / link-local address. Counts as a failure so a
   // misconfigured internal URL surfaces and eventually auto-disables.
   if (!(await isDeliverableUrl(row.url))) {
-    console.warn('[webhooks] refusing non-public delivery target for', row.id);
+    log.warn('webhooks.non_public_target_refused', { endpointId: row.id });
     await recordFailure(db, row);
     return;
   }
@@ -105,7 +106,7 @@ async function deliverOne(
   } catch (err) {
     // A row whose secret can't be decrypted can never produce a valid
     // signature — count it as a failure so it eventually auto-disables.
-    console.error('[webhooks] secret decrypt failed for', row.id, err);
+    log.error('webhooks.secret_decrypt_failed', { endpointId: row.id, err });
     await recordFailure(db, row);
     return;
   }
@@ -134,10 +135,7 @@ async function deliverOne(
       .update({ failure_count: 0, last_delivery_at: new Date().toISOString() })
       .eq('id', row.id);
   } catch (err) {
-    console.warn(
-      `[webhooks] delivery to ${row.id} failed:`,
-      err instanceof Error ? err.message : err
-    );
+    log.warn('webhooks.delivery_failed', { endpointId: row.id, err });
     await recordFailure(db, row);
   }
 }
@@ -153,6 +151,6 @@ async function recordFailure(db: SupabaseClient, row: EndpointRow): Promise<void
     max_failures: MAX_CONSECUTIVE_FAILURES,
   });
   if (error) {
-    console.error('[webhooks] record_webhook_failure failed for', row.id, error);
+    log.error('webhooks.record_failure_failed', { endpointId: row.id, err: error });
   }
 }

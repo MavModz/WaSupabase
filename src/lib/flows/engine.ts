@@ -33,6 +33,7 @@
  */
 
 import { supabaseAdmin } from "./admin-client";
+import { log } from "@/lib/log";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
@@ -243,7 +244,7 @@ async function loadActiveRunForContact(
     .order("started_at", { ascending: false })
     .limit(1);
   if (error) {
-    console.error("[flows] loadActiveRunForContact error:", error.message);
+    log.error("flows.load_active_run_failed", { err: error });
     return null;
   }
   const rows = (data as FlowRunRow[] | null) ?? [];
@@ -308,7 +309,7 @@ async function logEvent(
   });
   if (error) {
     // Logging failure is non-fatal — surface but don't throw.
-    console.error("[flows] logEvent error:", error.message);
+    log.error("flows.log_event_failed", { err: error });
   }
 }
 
@@ -923,7 +924,7 @@ async function advanceCurrentNodeKey(
   }
   const { data, error } = await q.select("id");
   if (error) {
-    console.error("[flows] advanceCurrentNodeKey error:", error.message);
+    log.error("flows.advance_node_failed", { err: error });
     return false;
   }
   return Array.isArray(data) && data.length > 0;
@@ -953,7 +954,7 @@ async function claimReplyTransition(
     .eq("transition_seq", run.transition_seq ?? 0)
     .select("id");
   if (error) {
-    console.error("[flows] claimReplyTransition error:", error.message);
+    log.error("flows.claim_reply_transition_failed", { err: error });
     return false;
   }
   if (!Array.isArray(data) || data.length !== 1) return false;
@@ -1054,10 +1055,7 @@ export async function dispatchInboundToFlows(
     const nodes = await loadAllNodes(db, flow.id);
     return startNewRun(db, flow, input, nodes);
   } catch (err) {
-    console.error(
-      "[flows] dispatchInboundToFlows threw:",
-      err instanceof Error ? err.message : err,
-    );
+    log.error("flows.dispatch_failed", { flowRunId: ownedRunId, err });
     if (ownedRunId) {
       return { consumed: true, flow_run_id: ownedRunId, outcome: "run_error" };
     }
@@ -1228,7 +1226,7 @@ async function claimFallbackTransition(
     .eq("transition_seq", run.transition_seq ?? 0)
     .select("id");
   if (error) {
-    console.error("[flows] claimFallbackTransition error:", error.message);
+    log.error("flows.claim_fallback_transition_failed", { err: error });
     return false;
   }
   if (!Array.isArray(data) || data.length !== 1) return false;
@@ -1286,7 +1284,7 @@ async function startNewRun(
     if (msg.includes("23505") || msg.includes("duplicate key")) {
       return { consumed: true, outcome: "duplicate_inbound_ignored" };
     }
-    console.error("[flows] startNewRun insert error:", insErr.message);
+    log.error("flows.start_run_insert_failed", { flowId: flow.id, err: insErr });
     return { consumed: false, outcome: "no_match" };
   }
   const run = inserted as FlowRunRow;
@@ -1308,7 +1306,7 @@ async function startNewRun(
   });
   if (incErr) {
     // Non-fatal — the run itself succeeded; only the counter is off.
-    console.error("[flows] execution_count rpc error:", incErr.message);
+    log.error("flows.execution_count_failed", { flowId: flow.id, err: incErr });
   }
 
   // Run the advance loop starting from the entry node.

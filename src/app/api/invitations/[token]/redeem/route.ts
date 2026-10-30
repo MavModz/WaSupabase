@@ -54,7 +54,7 @@ export async function POST(
   { params }: { params: Promise<{ token: string }> },
 ) {
   const ip = getClientIp(request);
-  const limit = checkRateLimit(`redeem:${ip}`, RATE_LIMITS.invitationRedeem);
+  const limit = await checkRateLimit(`redeem:${ip}`, RATE_LIMITS.invitationRedeem);
   if (!limit.success) return rateLimitResponse(limit);
 
   const { token } = await params;
@@ -75,6 +75,15 @@ export async function POST(
   } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: t('common.unauthorized') }, { status: 401 });
+  }
+
+  // redeem_invitation refuses a caller with no profile ("Caller has no
+  // profile"), which is exactly the user whose signup provisioning
+  // failed — often someone signing up *from* this invite link. Heal
+  // first (migration 064); it is a no-op for anyone who has a profile.
+  const { error: healErr } = await supabase.rpc("ensure_my_account");
+  if (healErr) {
+    console.error("[redeem] ensure_my_account failed:", healErr);
   }
 
   const { data: accountId, error } = await supabase.rpc("redeem_invitation", {

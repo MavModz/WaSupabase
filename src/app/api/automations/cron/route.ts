@@ -8,6 +8,8 @@ import {
   resumePendingExecution,
 } from '@/lib/automations/engine'
 import type { AutomationContext } from '@/lib/automations/engine'
+import { log, requestIdOf, withLogContext } from '@/lib/log'
+import { rateLimitBackend } from '@/lib/rate-limit'
 
 /**
  * Drain due `automation_pending_executions` rows. Meant to be hit
@@ -35,6 +37,28 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  return withLogContext({ requestId: requestIdOf(request), route: 'automations.cron' }, runCron)
+}
+
+/**
+ * Drop long-expired shared rate-limit windows (migration 065). Only
+ * the postgres backend writes that table. Best-effort: a failure is
+ * logged and never affects the cron's own work or response.
+ */
+async function sweepRateLimits() {
+  if (rateLimitBackend() !== 'postgres') return
+  try {
+    const { data, error } = await supabaseAdmin().rpc('rate_limit_sweep')
+    if (error) throw error
+    if (typeof data === 'number' && data > 0) log.info('rate_limit.swept', { deleted: data })
+  } catch (err) {
+    log.warn('rate_limit.sweep_failed', { err })
+  }
+}
+
+async function runCron() {
+  await sweepRateLimits()
+
   // Close out wait_for_reply runs whose 24h reply window lapsed. The
   // webhook already refuses to resume them; this just settles their
   // status and explains the outcome on the log.
@@ -50,7 +74,10 @@ export async function GET(request: Request) {
     .order('run_at', { ascending: true })
     .limit(50)
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    log.error('automations.cron.scan_failed', { err: error })
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
   if (!due || due.length === 0) return NextResponse.json({ processed: 0, expired, requeued })
 
   let processed = 0
@@ -75,5 +102,6 @@ export async function GET(request: Request) {
     processed++
   }
 
+  log.info('automations.cron.done', { processed, expired, requeued })
   return NextResponse.json({ processed, expired, requeued })
 }

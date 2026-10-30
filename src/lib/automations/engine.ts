@@ -26,6 +26,7 @@ import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { getT } from '@/lib/i18n/translate'
 import { isWithinTimeWindow } from './time-of-day'
+import { log } from '@/lib/log'
 
 /** Step errors land in automation_logs and are shown on the logs page. */
 const tErr = getT('LibErrors.engine')
@@ -88,11 +89,11 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
         .eq('account_id', input.accountId)
         .maybeSingle()
       if (ownErr) {
-        console.error('[automations] contact ownership check failed:', ownErr)
+        log.error('automations.contact_ownership_check_failed', { accountId: input.accountId, err: ownErr })
         return
       }
       if (!owned) {
-        console.warn('[automations] contact not in account, refusing dispatch', input.contactId)
+        log.warn('automations.contact_not_in_account', { accountId: input.accountId, contactId: input.contactId })
         return
       }
     }
@@ -111,14 +112,14 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
         .eq('account_id', input.accountId)
         .maybeSingle()
       if (convErr) {
-        console.error('[automations] conversation ownership check failed:', convErr)
+        log.error('automations.conversation_ownership_check_failed', { accountId: input.accountId, err: convErr })
         return
       }
       if (!conv) {
-        console.warn(
-          '[automations] conversation not in account, refusing dispatch',
-          input.context.conversation_id,
-        )
+        log.warn('automations.conversation_not_in_account', {
+          accountId: input.accountId,
+          conversationId: input.context.conversation_id,
+        })
         return
       }
     }
@@ -131,7 +132,7 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
       .eq('is_active', true)
 
     if (error) {
-      console.error('[automations] fetch failed:', error)
+      log.error('automations.fetch_failed', { accountId: input.accountId, err: error })
       return
     }
     if (!automations || automations.length === 0) return
@@ -141,11 +142,11 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
       try {
         await executeAutomation(automation, input)
       } catch (err) {
-        console.error('[automations] execute failed:', automation.id, err)
+        log.error('automations.execute_failed', { accountId: input.accountId, automationId: automation.id, err })
       }
     }
   } catch (err) {
-    console.error('[automations] dispatch failed:', err)
+    log.error('automations.dispatch_failed', { accountId: input.accountId, err })
   }
 }
 
@@ -178,7 +179,7 @@ export async function resumePendingExecution(pending: {
     .single()
 
   if (error || !automation) {
-    console.error('[automations] resume: missing automation', pending.automation_id, error)
+    log.error('automations.resume_missing_automation', { pendingId: pending.id, automationId: pending.automation_id, err: error })
     await markPending(pending.id, 'failed')
     return
   }
@@ -206,7 +207,7 @@ export async function resumePendingExecution(pending: {
     })
     await markPending(pending.id, 'done')
   } catch (err) {
-    console.error('[automations] resume failed:', err)
+    log.error('automations.resume_failed', { pendingId: pending.id, err })
     await markPending(pending.id, 'failed')
   }
 }
@@ -251,7 +252,7 @@ export async function resumeAwaitingReply(input: AwaitingReplyInput): Promise<bo
       .order('created_at', { ascending: false })
       .limit(1)
     if (error) {
-      console.error('[automations] awaiting-reply lookup failed:', error)
+      log.error('automations.awaiting_reply_lookup_failed', { err: error })
       return false
     }
     const pending = rows?.[0] as PendingRow | undefined
@@ -308,7 +309,7 @@ export async function resumeAwaitingReply(input: AwaitingReplyInput): Promise<bo
     await markPending(pending.id, 'done')
     return true
   } catch (err) {
-    console.error('[automations] awaiting-reply resume failed:', err)
+    log.error('automations.awaiting_reply_resume_failed', { pendingId: claimedId, err })
     if (claimedId) {
       // The message was already taken by the claim; report it consumed so
       // it doesn't ALSO fan out to other automations.
@@ -334,7 +335,7 @@ export async function expireAwaitingReplies(now: Date = new Date()): Promise<num
     .lte('run_at', now.toISOString())
     .select('id, log_id')
   if (error) {
-    console.error('[automations] expire awaiting replies failed:', error)
+    log.error('automations.expire_awaiting_replies_failed', { err: error })
     return 0
   }
   const rows = (data ?? []) as { id: string; log_id: string | null }[]
@@ -407,7 +408,7 @@ export async function requeueStalledExecutions(now: Date = new Date()): Promise<
     .lt('claimed_at', new Date(now.getTime() - STALLED_CLAIM_MS).toISOString())
     .select('id')
   if (error) {
-    console.error('[automations] requeue stalled executions failed:', error)
+    log.error('automations.requeue_stalled_failed', { err: error })
     return 0
   }
   return (data ?? []).length
@@ -447,7 +448,7 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     .single()
 
   if (logErr || !log) {
-    console.error('[automations] cannot create log:', logErr)
+    log.error('automations.log_create_failed', { err: logErr })
     return
   }
 
@@ -470,7 +471,7 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     p_automation_id: automation.id,
   })
   if (rpcErr) {
-    console.error('[automations] increment counter failed:', rpcErr)
+    log.error('automations.increment_counter_failed', { err: rpcErr })
   }
 }
 
@@ -819,7 +820,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
 
       const depth = getTagChainDepth(args.context)
       if (depth >= MAX_TAG_CHAIN_DEPTH) {
-        console.warn('[automations] tag_added chain depth limit reached', {
+        log.warn('automations.tag_chain_depth_limit', {
           automationId: args.automation.id,
           contactId: args.contactId,
           tagId: cfg.tag_id,

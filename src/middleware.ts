@@ -1,7 +1,20 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/request-id'
 
 export async function middleware(request: NextRequest) {
+  // Correlation id for logs and support: kept if a proxy in front of us
+  // already set a well-formed one, minted otherwise. Setting it on
+  // `request.headers` forwards it to the route handler through every
+  // `NextResponse.next({ request })` below (including the one rebuilt in
+  // setAll), and `withRequestId` echoes it on whatever response we return.
+  const requestId = resolveRequestId(request.headers.get(REQUEST_ID_HEADER))
+  request.headers.set(REQUEST_ID_HEADER, requestId)
+  const withRequestId = <T extends NextResponse>(response: T): T => {
+    response.headers.set(REQUEST_ID_HEADER, requestId)
+    return response
+  }
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -39,7 +52,7 @@ export async function middleware(request: NextRequest) {
     supabaseResponse.cookies.getAll().forEach((cookie) => {
       response.cookies.set(cookie)
     })
-    return response
+    return withRequestId(response)
   }
 
   // Auth pages - redirect to dashboard if already logged in.
@@ -87,7 +100,7 @@ export async function middleware(request: NextRequest) {
     )
   }
 
-  return supabaseResponse
+  return withRequestId(supabaseResponse)
 }
 
 export const config = {

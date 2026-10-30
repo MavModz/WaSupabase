@@ -76,7 +76,7 @@ export async function PATCH(
     // anything is written locally, so the role has to be checked here.
     const { supabase, accountId, userId } = await requireRole('admin')
 
-    const limit = checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
+    const limit = await checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
     if (!limit.success) return rateLimitResponse(limit)
 
     let payload: TemplatePayload
@@ -260,7 +260,7 @@ export async function DELETE(
     // the PATCH handler above.
     const { supabase, accountId, userId } = await requireRole('admin')
 
-    const limit = checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
+    const limit = await checkRateLimit(`whatsapp-admin:${userId}`, RATE_LIMITS.whatsappAdmin)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { data: existing, error: lookupErr } = await supabase

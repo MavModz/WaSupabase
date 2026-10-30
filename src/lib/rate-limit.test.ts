@@ -1,8 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The postgres backend talks to the service-role client; the memory
+// tests never reach it. `h.rpc` decides what rate_limit_hit returns.
+const h = vi.hoisted(() => ({
+  rpc: vi.fn(),
+}));
+vi.mock("@/lib/automations/admin-client", () => ({
+  supabaseAdmin: () => ({
+    rpc: (fn: string, args: unknown) => ({
+      abortSignal: () => h.rpc(fn, args),
+    }),
+  }),
+}));
+
 import {
   __resetRateLimitForTests,
   checkRateLimit,
   getClientIp,
+  rateLimitBackend,
   rateLimitResponse,
 } from "./rate-limit";
 
@@ -13,8 +28,8 @@ describe("checkRateLimit", () => {
     __resetRateLimitForTests();
   });
 
-  it("permits the first request and decrements remaining", () => {
-    const result = checkRateLimit("user:1", OPTS);
+  it("permits the first request and decrements remaining", async () => {
+    const result = await checkRateLimit("user:1", OPTS);
     expect(result).toMatchObject({
       success: true,
       remaining: 2,
@@ -23,40 +38,40 @@ describe("checkRateLimit", () => {
     expect(result.reset).toBeGreaterThan(Date.now());
   });
 
-  it("permits exactly `limit` requests then rejects the next", () => {
-    expect(checkRateLimit("user:1", OPTS).success).toBe(true);
-    expect(checkRateLimit("user:1", OPTS).success).toBe(true);
-    expect(checkRateLimit("user:1", OPTS).success).toBe(true);
-    const over = checkRateLimit("user:1", OPTS);
+  it("permits exactly `limit` requests then rejects the next", async () => {
+    expect((await checkRateLimit("user:1", OPTS)).success).toBe(true);
+    expect((await checkRateLimit("user:1", OPTS)).success).toBe(true);
+    expect((await checkRateLimit("user:1", OPTS)).success).toBe(true);
+    const over = await checkRateLimit("user:1", OPTS);
     expect(over.success).toBe(false);
     expect(over.remaining).toBe(0);
   });
 
-  it("keeps separate counters per key", () => {
-    checkRateLimit("user:1", OPTS);
-    checkRateLimit("user:1", OPTS);
-    checkRateLimit("user:1", OPTS);
+  it("keeps separate counters per key", async () => {
+    await checkRateLimit("user:1", OPTS);
+    await checkRateLimit("user:1", OPTS);
+    await checkRateLimit("user:1", OPTS);
     // user:1 is at the cap, user:2 should still be unaffected.
-    const other = checkRateLimit("user:2", OPTS);
+    const other = await checkRateLimit("user:2", OPTS);
     expect(other.success).toBe(true);
     expect(other.remaining).toBe(2);
   });
 
-  it("opens a fresh window after `windowMs` elapses", () => {
+  it("opens a fresh window after `windowMs` elapses", async () => {
     vi.useFakeTimers();
     try {
       const t0 = new Date("2026-05-01T00:00:00Z").getTime();
       vi.setSystemTime(t0);
       __resetRateLimitForTests();
 
-      checkRateLimit("user:1", OPTS);
-      checkRateLimit("user:1", OPTS);
-      checkRateLimit("user:1", OPTS);
-      expect(checkRateLimit("user:1", OPTS).success).toBe(false);
+      await checkRateLimit("user:1", OPTS);
+      await checkRateLimit("user:1", OPTS);
+      await checkRateLimit("user:1", OPTS);
+      expect((await checkRateLimit("user:1", OPTS)).success).toBe(false);
 
       // Jump just past the window.
       vi.setSystemTime(t0 + OPTS.windowMs + 1);
-      const refreshed = checkRateLimit("user:1", OPTS);
+      const refreshed = await checkRateLimit("user:1", OPTS);
       expect(refreshed.success).toBe(true);
       expect(refreshed.remaining).toBe(2);
     } finally {
@@ -151,5 +166,81 @@ describe("getClientIp", () => {
 
   it("falls back to a constant with no proxy headers", () => {
     expect(getClientIp(req({}))).toBe("unknown");
+  });
+});
+
+describe("checkRateLimit — postgres backend (RATE_LIMIT_BACKEND=postgres)", () => {
+  beforeEach(() => {
+    __resetRateLimitForTests();
+    vi.stubEnv("RATE_LIMIT_BACKEND", "postgres");
+    h.rpc.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("selects the backend from the env, defaulting to memory", () => {
+    expect(rateLimitBackend()).toBe("postgres");
+    vi.stubEnv("RATE_LIMIT_BACKEND", "");
+    expect(rateLimitBackend()).toBe("memory");
+    vi.stubEnv("RATE_LIMIT_BACKEND", "redis");
+    expect(rateLimitBackend()).toBe("memory");
+  });
+
+  it("maps the rate_limit_hit row onto the result shape", async () => {
+    const resetAt = "2026-11-01T00:01:00.000Z";
+    h.rpc.mockResolvedValue({
+      data: [{ allowed: false, remaining: 0, reset_at: resetAt }],
+      error: null,
+    });
+    const result = await checkRateLimit("send:user-1", OPTS);
+    expect(h.rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "send:user-1",
+      p_limit: 3,
+      p_window_ms: 60_000,
+    });
+    expect(result).toEqual({
+      success: false,
+      remaining: 0,
+      reset: Date.parse(resetAt),
+      limit: 3,
+    });
+  });
+
+  it("caps the key at the column's 256 characters", async () => {
+    h.rpc.mockResolvedValue({
+      data: [{ allowed: true, remaining: 2, reset_at: new Date().toISOString() }],
+      error: null,
+    });
+    await checkRateLimit("k".repeat(400), OPTS);
+    expect((h.rpc.mock.calls[0][1] as { p_key: string }).p_key).toHaveLength(256);
+  });
+
+  it("falls back to the in-memory counter on an RPC error, and logs once", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    h.rpc.mockResolvedValue({ data: null, error: { message: "down", code: "08006" } });
+
+    const results = [];
+    for (let i = 0; i < 4; i++) results.push(await checkRateLimit("user:9", OPTS));
+
+    // Still limited — per instance — rather than open or closed.
+    expect(results.map((r) => r.success)).toEqual([true, true, true, false]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toContain("rate_limit.backend_error");
+  });
+
+  it("falls back when the RPC rejects (timeout / network)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    h.rpc.mockRejectedValue(new Error("The operation was aborted due to timeout"));
+    const result = await checkRateLimit("user:10", OPTS);
+    expect(result).toMatchObject({ success: true, remaining: 2, limit: 3 });
+  });
+
+  it("falls back on an unexpected payload", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    h.rpc.mockResolvedValue({ data: [], error: null });
+    const result = await checkRateLimit("user:11", OPTS);
+    expect(result.success).toBe(true);
   });
 });

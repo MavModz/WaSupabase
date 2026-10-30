@@ -14,7 +14,14 @@ export interface Profile {
   id: string;
   user_id: string;
   full_name: string;
+  /** '' for a user who signed in without an email (phone sign-in). */
   email: string;
+  /**
+   * E.164 copy of the verified sign-in phone (auth.users.phone), set at
+   * provisioning (migration 064). Null for email users. Not
+   * client-writable. Only present when a query selects it.
+   */
+  phone?: string | null;
   avatar_url?: string;
   /**
    * Legacy free-form role column from migration 001. Never read

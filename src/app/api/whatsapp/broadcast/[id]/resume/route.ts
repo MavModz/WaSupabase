@@ -56,7 +56,7 @@ export async function POST(
     // puts real messages on real phones.
     const { supabase, accountId, userId } = await requireRole('agent');
 
-    const limit = checkRateLimit(
+    const limit = await checkRateLimit(
       `broadcast-resume:${userId}`,
       RATE_LIMITS.broadcast
     );

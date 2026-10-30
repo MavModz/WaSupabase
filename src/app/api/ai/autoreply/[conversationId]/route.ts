@@ -33,7 +33,7 @@ export async function POST(request: Request, { params }: Params) {
 
     // Reuse the send bucket: this is a cheap per-user inbox action and
     // toggling it in a tight loop has no legitimate use.
-    const limit = checkRateLimit(`ai-takeover:${userId}`, RATE_LIMITS.send)
+    const limit = await checkRateLimit(`ai-takeover:${userId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { conversationId } = await params

@@ -42,7 +42,7 @@ export async function GET() {
     return NextResponse.json({ error: t('common.unauthorized') }, { status: 401 })
   }
 
-  const limit = checkRateLimit(`whatsapp-admin:${user.id}`, RATE_LIMITS.whatsappAdmin)
+  const limit = await checkRateLimit(`whatsapp-admin:${user.id}`, RATE_LIMITS.whatsappAdmin)
   if (!limit.success) return rateLimitResponse(limit)
 
   // whatsapp_config is one-row-per-account post-017. Resolve the

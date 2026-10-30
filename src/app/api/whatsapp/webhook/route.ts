@@ -32,6 +32,7 @@ import {
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
 import { applyMessageStatus } from '@/lib/whatsapp/message-status-sync'
+import { log, requestIdOf, withLogContext } from '@/lib/log'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -165,7 +166,7 @@ export async function GET(request: Request) {
       .select('id, verify_token')
 
     if (configError || !configs) {
-      console.error('Error fetching configs for verification:', configError)
+      log.error('webhook.verify_config_fetch_failed', { err: configError })
       return NextResponse.json(
         { error: 'Verification failed' },
         { status: 403 }
@@ -199,10 +200,7 @@ export async function GET(request: Request) {
           .eq('id', matchedConfig.id)
           .then(({ error }: { error: unknown }) => {
             if (error) {
-              console.warn(
-                '[webhook] verify_token GCM upgrade failed:',
-                (error as { message?: string })?.message ?? error,
-              )
+              log.warn('webhook.verify_token_upgrade_failed', { err: error })
             }
           })
       }
@@ -218,7 +216,7 @@ export async function GET(request: Request) {
       { status: 403 }
     )
   } catch (error) {
-    console.error('Error in webhook GET verification:', error)
+    log.error('webhook.verify_failed', { err: error })
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
@@ -232,7 +230,7 @@ export async function POST(request: Request) {
   // signed. request.json() would re-encode and break the signature.
   const rawBody = await readCappedBody(request)
   if (rawBody === null) {
-    console.warn('[webhook] rejected oversized payload')
+    log.warn('webhook.rejected_oversized', { requestId: requestIdOf(request) })
     return NextResponse.json({ error: 'Payload too large' }, { status: 413 })
   }
   const signature = request.headers.get('x-hub-signature-256')
@@ -241,7 +239,7 @@ export async function POST(request: Request) {
     // 401 (not 200) — we want Meta's delivery dashboard to show failures
     // loudly if a misconfiguration causes signatures to stop matching,
     // rather than silently eating events.
-    console.warn('[webhook] rejected request with invalid signature')
+    log.warn('webhook.rejected_signature', { requestId: requestIdOf(request) })
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
@@ -266,13 +264,20 @@ export async function POST(request: Request) {
   // (see issue #301). `after()` hands the callback to the runtime, which
   // keeps the function alive until it resolves (within the route's
   // maxDuration).
-  after(async () => {
-    try {
-      await processWebhook(body)
-    } catch (error) {
-      console.error('Error processing webhook:', error)
-    }
-  })
+  //
+  // Everything logged while processing carries this request's id and
+  // route (AsyncLocalStorage), so one Meta delivery greps as one unit.
+  // Read the header before `after()`; the request is still in scope.
+  const logContext = { requestId: requestIdOf(request), route: 'whatsapp.webhook' }
+  after(() =>
+    withLogContext(logContext, async () => {
+      try {
+        await processWebhook(body)
+      } catch (error) {
+        log.error('webhook.processing_failed', { err: error })
+      }
+    }),
+  )
 
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
@@ -287,13 +292,15 @@ async function resolveAccountForPhoneNumber(
     .eq('phone_number_id', phoneNumberId)
 
   if (error) {
-    console.error('Error resolving account for status update:', phoneNumberId, error)
+    log.error('webhook.status_account_lookup_failed', { phoneNumberId, err: error })
     return null
   }
   if (!data || data.length !== 1) {
-    console.error(
-      `Status update for phone_number_id ${phoneNumberId} matched ${data?.length ?? 0} configs; message statuses skipped`
-    )
+    log.error('webhook.status_account_ambiguous', {
+      phoneNumberId,
+      matched: data?.length ?? 0,
+      msg: 'message statuses skipped',
+    })
     return null
   }
   return data[0].account_id
@@ -357,27 +364,22 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         .eq('phone_number_id', phoneNumberId)
 
       if (configError) {
-        console.error(
-          'Error fetching whatsapp_config for phone_number_id:',
-          phoneNumberId,
-          configError
-        )
+        log.error('webhook.config_fetch_failed', { phoneNumberId, err: configError })
         continue
       }
 
       if (!configRows || configRows.length === 0) {
-        console.error('No config found for phone_number_id:', phoneNumberId)
+        log.error('webhook.config_not_found', { phoneNumberId })
         continue
       }
 
       if (configRows.length > 1) {
-        console.error(
-          `Multiple configs (${configRows.length}) found for phone_number_id:`,
+        log.error('webhook.config_ambiguous', {
           phoneNumberId,
-          '— inbound message dropped. Resolve duplicates so each number maps to a single account.',
-          'Account owners:',
-          configRows.map((r: { account_id: string; user_id: string }) => `${r.account_id} (admin ${r.user_id})`)
-        )
+          matched: configRows.length,
+          accountIds: configRows.map((r: { account_id: string }) => r.account_id),
+          msg: 'inbound message dropped; resolve duplicates so each number maps to a single account',
+        })
         continue
       }
 
@@ -433,10 +435,12 @@ async function handleStatusUpdate(
       : null
 
   if (failure) {
-    console.warn(
-      `WhatsApp message ${status.id} failed: [${failure.code}] ${failure.title}` +
-        (failure.details ? ` — ${failure.details}` : '')
-    )
+    log.warn('webhook.message_failed', {
+      wamid: status.id,
+      code: failure.code,
+      title: failure.title,
+      details: failure.details,
+    })
   }
 
   const advancedMessages = accountId
@@ -491,7 +495,7 @@ async function flagBroadcastReplyIfAny(accountId: string, contactId: string) {
   try {
     await flagBroadcastReply(supabaseAdmin(), accountId, contactId)
   } catch (err) {
-    console.error('flagBroadcastReplyIfAny failed:', err)
+    log.error('webhook.broadcast_reply_flag_failed', { err })
   }
 }
 
@@ -511,7 +515,7 @@ async function lookupInternalIdByMetaId(
     .eq('conversation_id', conversationId)
     .maybeSingle()
   if (error) {
-    console.error('[webhook] lookupInternalIdByMetaId failed:', error.message)
+    log.error('webhook.message_lookup_failed', { err: error })
     return null
   }
   return data?.id ?? null
@@ -538,10 +542,7 @@ async function handleReaction(
     conversationId
   )
   if (!targetInternalId) {
-    console.warn(
-      '[webhook] reaction target message not found; skipping',
-      reaction.message_id
-    )
+    log.warn('webhook.reaction_target_missing', { wamid: reaction.message_id })
     return
   }
 
@@ -554,7 +555,7 @@ async function handleReaction(
       .eq('actor_type', 'customer')
       .eq('actor_id', contactId)
     if (delError) {
-      console.error('[webhook] reaction delete failed:', delError.message)
+      log.error('webhook.reaction_delete_failed', { err: delError })
     }
     return
   }
@@ -572,7 +573,7 @@ async function handleReaction(
       { onConflict: 'message_id,actor_type,actor_id' }
     )
   if (upsertError) {
-    console.error('[webhook] reaction upsert failed:', upsertError.message)
+    log.error('webhook.reaction_upsert_failed', { err: upsertError })
   }
 }
 
@@ -599,10 +600,7 @@ async function processMessage(
     // Neither key present. Creating a row anyway would mean an
     // unreachable contact that can never be matched again, so drop the
     // delivery loudly instead of silently accumulating them.
-    console.error(
-      '[webhook] inbound message carries neither a phone number nor a BSUID; skipping:',
-      message.id
-    )
+    log.error('webhook.inbound_without_identity', { wamid: message.id })
     return
   }
 
@@ -660,10 +658,7 @@ async function processMessage(
       conversation.id
     )
     if (!replyToInternalId) {
-      console.warn(
-        '[webhook] reply context parent not found:',
-        message.context.id
-      )
+      log.warn('webhook.reply_parent_missing', { wamid: message.context.id })
     }
   }
 
@@ -728,7 +723,7 @@ async function processMessage(
     .select('id')
 
   if (msgError) {
-    console.error('Error inserting message:', msgError)
+    log.error('webhook.message_insert_failed', { accountId, err: msgError })
     return
   }
 
@@ -737,10 +732,7 @@ async function processMessage(
   // re-advancing flows, re-firing automations, re-invoking AI handling, and
   // re-dispatching public webhooks (issue #367).
   if (!insertedRows || insertedRows.length === 0) {
-    console.info(
-      '[webhook] duplicate inbound message ignored (idempotent replay):',
-      message.id
-    )
+    log.info('webhook.duplicate_inbound_ignored', { wamid: message.id })
     return
   }
 
@@ -766,7 +758,7 @@ async function processMessage(
   )
 
   if (convError) {
-    console.error('Error updating conversation:', convError)
+    log.error('webhook.conversation_update_failed', { accountId, err: convError })
   }
 
   // A customer writing again re-opens the thread (issue #409). Kept as a
@@ -896,7 +888,7 @@ async function processMessage(
         // trigger's exact-id match.
         interactive_reply_id: interactiveReplyId ?? undefined,
       },
-    }).catch((err) => console.error('[automations] dispatch failed:', err))
+    }).catch((err) => log.error('webhook.automations_dispatch_failed', { accountId, err }))
   }
 
   // AI auto-reply. Runs only for plain-text inbound the deterministic
@@ -992,10 +984,7 @@ async function parseMessageContent(
 
       return `/api/whatsapp/media/${mediaId}`
     } catch (error) {
-      console.error(
-        `Failed to verify media ${mediaId} with Meta:`,
-        error instanceof Error ? error.message : error
-      )
+      log.error('webhook.media_verify_failed', { mediaId, err: error })
       return null
     }
   }
@@ -1165,7 +1154,7 @@ async function findContactByWaUserId(
     .maybeSingle()
 
   if (error) {
-    console.error('[webhook] BSUID contact lookup failed:', error.message)
+    log.error('webhook.bsuid_contact_lookup_failed', { err: error })
     return null
   }
   return data ?? null
@@ -1257,10 +1246,7 @@ async function findOrCreateContact(
         // A BSUID backfill can lose a race with a concurrent delivery
         // that already claimed it for another row. Not fatal — the
         // message still belongs to the contact we matched.
-        console.error(
-          '[webhook] contact identity backfill failed:',
-          updateError.message
-        )
+        log.error('webhook.contact_identity_backfill_failed', { err: updateError })
       } else if (updated) {
         existingContact = updated
       }
@@ -1310,7 +1296,7 @@ async function findOrCreateContact(
         if (racedByPhone) return { contact: racedByPhone, wasCreated: false }
       }
     }
-    console.error('Error creating contact:', createError)
+    log.error('webhook.contact_create_failed', { err: createError })
     return null
   }
 
@@ -1344,7 +1330,7 @@ async function findOrCreateConversation(
     .limit(1)
 
   if (findError) {
-    console.error('Error finding conversation:', findError)
+    log.error('webhook.conversation_find_failed', { err: findError })
     return null
   }
 
@@ -1381,7 +1367,7 @@ async function findOrCreateConversation(
         return { conversation: raced[0], created: false }
       }
     }
-    console.error('Error creating conversation:', createError)
+    log.error('webhook.conversation_create_failed', { err: createError })
     return null
   }
 

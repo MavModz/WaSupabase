@@ -277,10 +277,11 @@ describe('dispatchInboundToAiReply — typing indicator (#527)', () => {
     expect(h.engineSendText).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
     )
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('typing indicator failed'),
-      expect.any(Error),
-    )
+    // One structured line (src/lib/log.ts) naming the event and the error.
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0][0])
+    expect(line).toContain('ai_auto_reply.typing_indicator_failed')
+    expect(line).toContain('Meta API error: 400')
     warn.mockRestore()
   })
 

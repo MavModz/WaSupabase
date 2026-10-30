@@ -36,7 +36,7 @@ export async function GET(
       )
     }
 
-    const limit = checkRateLimit(`whatsapp-media:${user.id}`, RATE_LIMITS.whatsappMedia)
+    const limit = await checkRateLimit(`whatsapp-media:${user.id}`, RATE_LIMITS.whatsappMedia)
     if (!limit.success) return rateLimitResponse(limit)
 
     // Resolve the caller's account_id — whatsapp_config is one-per-
