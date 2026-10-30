@@ -169,7 +169,8 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind IN ('r', 'p')
-      AND c.relname NOT IN ('pending_message_statuses', 'signup_provisioning_failures', 'rate_limit_buckets')
+      AND c.relname NOT IN ('pending_message_statuses', 'signup_provisioning_failures', 'rate_limit_buckets',
+                            'platform_settings', 'entitlement_audit_log', 'trial_number_claims')
       AND NOT has_table_privilege('authenticated', c.oid, 'SELECT')
   ) THEN
     RAISE EXCEPTION 'authenticated lacks SELECT on a public table — migration 062 did not apply';
@@ -219,6 +220,58 @@ BEGIN
      OR has_function_privilege('anon', 'public.rate_limit_hit(text,integer,integer)', 'EXECUTE')
      OR NOT has_function_privilege('service_role', 'public.rate_limit_hit(text,integer,integer)', 'EXECUTE') THEN
     RAISE EXCEPTION 'rate limit objects must be service-role only (065)';
+  END IF;
+
+  -- 066-068: entitlements. Tables exist, seeds applied, service-only
+  -- tables and operator RPCs are closed to clients, and the enforcement
+  -- triggers ship disabled while the switch is off.
+  IF to_regclass('public.plans') IS NULL
+     OR to_regclass('public.plan_prices') IS NULL
+     OR to_regclass('public.currencies') IS NULL
+     OR to_regclass('public.account_subscriptions') IS NULL
+     OR to_regclass('public.account_usage_counters') IS NULL
+     OR to_regclass('public.platform_settings') IS NULL
+     OR to_regclass('public.entitlement_audit_log') IS NULL
+     OR to_regclass('public.trial_number_claims') IS NULL THEN
+    RAISE EXCEPTION 'entitlement tables are missing — migration 066 did not apply';
+  END IF;
+  IF (SELECT count(*) FROM public.plans
+      WHERE key IN ('trial', 'starter', 'growth', 'pro', 'legacy_beta')) <> 5 THEN
+    RAISE EXCEPTION 'plan seed rows are missing — migration 066 did not apply';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.platform_settings', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.entitlement_audit_log', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.trial_number_claims', 'SELECT')
+     OR has_table_privilege('authenticated', 'public.plans', 'UPDATE')
+     OR has_table_privilege('authenticated', 'public.account_subscriptions', 'UPDATE')
+     OR has_table_privilege('authenticated', 'public.account_usage_counters', 'UPDATE') THEN
+    RAISE EXCEPTION 'entitlement table grants are too wide (066)';
+  END IF;
+  IF to_regprocedure('public.account_entitlements(uuid)') IS NULL
+     OR to_regprocedure('public.entitlement_consume(uuid,text,integer)') IS NULL
+     OR to_regprocedure('public.entitlements_run_due(integer)') IS NULL
+     OR to_regprocedure('public.ent_set_plan(uuid,text,text,text,jsonb)') IS NULL THEN
+    RAISE EXCEPTION 'entitlement functions are missing — migration 067 did not apply';
+  END IF;
+  IF to_regprocedure('public.entitlements_set_enabled(boolean,text,text)') IS NULL THEN
+    RAISE EXCEPTION 'entitlements_set_enabled is missing — migration 068 did not apply';
+  END IF;
+  IF has_function_privilege('authenticated', 'public.ent_set_plan(uuid,text,text,text,jsonb)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.account_entitlements(uuid)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.entitlement_consume(uuid,text,integer)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.entitlements_set_enabled(boolean,text,text)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.ent_set_plan(uuid,text,text,text,jsonb)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.entitlements_set_enabled(boolean,text,text)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'entitlement function grants are wrong (067 / 068)';
+  END IF;
+  IF (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'ent\_%' AND NOT tgisinternal) <> 15 THEN
+    RAISE EXCEPTION 'expected 15 enforcement triggers — migration 068 did not apply';
+  END IF;
+  IF NOT public.entitlements_enabled() AND EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname LIKE 'ent\_%' AND NOT tgisinternal AND tgenabled <> 'D'
+  ) THEN
+    RAISE EXCEPTION 'an enforcement trigger is enabled while the entitlements switch is off (068)';
   END IF;
 
   RAISE NOTICE 'schema verification passed';

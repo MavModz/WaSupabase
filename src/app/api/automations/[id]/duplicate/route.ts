@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -56,6 +57,8 @@ export async function POST(
     })
     .select()
     .single()
+  const planRes = planErrorResponse(copyErr)
+  if (planRes) return planRes
   if (copyErr || !copy) {
     return NextResponse.json({ error: copyErr?.message ?? t('automations.copyFailed') }, { status: 500 })
   }

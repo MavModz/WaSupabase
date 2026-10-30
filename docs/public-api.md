@@ -82,15 +82,34 @@ failure) also has an `X-Request-Id` header.
 | ------ | -------------- | ------------------------------------------------ |
 | 401    | `unauthorized` | Missing / malformed / unknown / revoked / expired key |
 | 403    | `forbidden`    | Valid key, but missing the required scope        |
+| 402    | `plan_limit_reached` | A plan limit was reached (only on deployments with plans enabled) |
+| 402    | `plan_feature_unavailable` | The plan or account state doesn't allow this (only on deployments with plans enabled) |
 | 429    | `rate_limited` | Per-key rate limit exceeded                      |
 | 400    | `bad_request`  | Malformed input                                  |
 | 404    | `not_found`    | No such resource                                 |
 | 500    | `internal`     | Server error                                     |
 | 503    | `unavailable`  | The key could not be verified right now — retry  |
 
+On a deployment with plans enabled, a `402` also carries the machine fields:
+`resource`, plus `usage` and `limit` for a limit, and `reason` when the account state or a
+suspended key is the cause (`account_restricted`, `account_locked`, `not_on_plan`,
+`key_suspended`). A broadcast refused before sending adds `requested`, `remaining` and
+`resets_at`.
+
+```jsonc
+{ "error": { "code": "plan_limit_reached", "message": "Plan limit reached for contacts: 5000 of 5000 used",
+             "resource": "contacts", "usage": 5000, "limit": 5000 } }
+```
+
+Don't retry a `402` unchanged: it clears only when usage drops, the plan changes, or the
+period resets. A restricted account keeps read scopes, and a locked account keeps only
+`GET /api/v1/me`. A broadcast accepted with a `202` can still stop part-way if the allowance
+runs out: the unsent recipients stay `pending` and can be resumed.
+
 ## Rate limits
 
-Requests are limited **per key**: **120 requests per minute**. On a
+Requests are limited **per key**: **120 requests per minute**, or your plan's rate on a
+deployment with plans enabled. On a
 `429`, these headers tell you when to retry:
 
 - `Retry-After` — seconds until the window resets

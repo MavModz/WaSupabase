@@ -35,6 +35,8 @@ import { hashApiKey, looksLikeApiKey } from '@/lib/api-keys/keys';
 import { hasScope, type ApiScope } from '@/lib/api-keys/scopes';
 import { forbidden, rateLimited, unauthorized } from '@/lib/api/v1/respond';
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit';
+import { assertApiAccess } from '@/lib/entitlements/gates';
+import { getEntitlements, isApiKeySuspended } from '@/lib/entitlements/resolve';
 
 export interface ApiKeyContext {
   /** Discriminant — lets shared logic tell key auth from cookie auth. */
@@ -71,6 +73,8 @@ function extractKey(request: Request): string | null {
  *   401 unauthorized — no key, malformed, unknown, revoked, expired
  *   403 forbidden    — valid key without the required scope
  *   429 rate_limited — per-key budget exhausted
+ *   402 plan_feature_unavailable — the plan or plan state refuses it
+ *       (switch on only; see lib/entitlements/gates.ts)
  *
  * On success, bumps `last_used_at` (fire-and-forget) and returns the
  * account context.
@@ -94,9 +98,24 @@ export async function requireApiKey(
 
   // Rate-limit per key, before the scope check, so an unauthorized-
   // scope caller still can't hammer the endpoint for free.
-  const limit = await checkRateLimit(`apikey:${row.id}`, RATE_LIMITS.publicApi);
+  //
+  // With entitlements on, the bucket size comes from the plan (R7). A
+  // plan with no API has a rate of 0, which keeps today's bucket: its
+  // calls are refused just below, and still shouldn't be free to hammer.
+  const ent = await getEntitlements(row.account_id);
+  const planRate = ent?.limits.api_rate_per_minute;
+  const limit = await checkRateLimit(
+    `apikey:${row.id}`,
+    planRate ? { ...RATE_LIMITS.publicApi, limit: planRate } : RATE_LIMITS.publicApi
+  );
   if (!limit.success) {
     throw rateLimited(limit);
+  }
+
+  // Before touchLastUsed: a refused call is not "use", and last_used_at
+  // decides which keys survive a downgrade.
+  if (ent) {
+    assertApiAccess(ent, scope, await isApiKeySuspended(row.id));
   }
 
   if (scope && !hasScope(row.scopes, scope)) {

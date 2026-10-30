@@ -446,6 +446,11 @@ export interface Broadcast {
    */
   delivery_locked_at?: string | null;
   delivery_lease_until?: string | null;
+  /**
+   * Why a broadcast stopped with recipients still pending, set when the
+   * plan's allowance ran out mid-send (migration 068). Resume clears it.
+   */
+  paused_reason?: 'plan_limit' | null;
   created_at: string;
 }
 

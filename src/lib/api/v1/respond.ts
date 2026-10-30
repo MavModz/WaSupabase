@@ -17,6 +17,7 @@
 import { NextResponse } from 'next/server';
 import type { RateLimitResult } from '@/lib/rate-limit';
 import { log } from '@/lib/log';
+import { PlanLimitError } from '@/lib/entitlements/errors';
 
 export type ApiErrorCode =
   | 'unauthorized' // missing / malformed / unknown / revoked / expired key
@@ -25,7 +26,9 @@ export type ApiErrorCode =
   | 'bad_request' // malformed input
   | 'not_found'
   | 'internal'
-  | 'unavailable';
+  | 'unavailable'
+  | 'plan_limit_reached' // count or period limit (HTTP 402)
+  | 'plan_feature_unavailable'; // flag off, or plan state forbids it (HTTP 402)
 
 /**
  * Typed error a route (or `requireApiKey`) can throw and have mapped
@@ -128,6 +131,9 @@ export function toApiErrorResponse(err: unknown): NextResponse {
       { error: { code: err.code, message: err.message } },
       { status: err.status, headers: err.headers }
     );
+  }
+  if (err instanceof PlanLimitError) {
+    return NextResponse.json(err.apiBody(), { status: err.status });
   }
   const errorId = crypto.randomUUID();
   log.error('api_v1.unhandled_error', { errorId, err });

@@ -24,6 +24,7 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { parseInternationalPhone } from '@/lib/whatsapp/phone-utils';
 import { SendMessageError } from '@/lib/whatsapp/send-message';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
+import { fromPostgrestError } from '@/lib/entitlements/errors';
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -108,6 +109,9 @@ export async function resolveConversationByPhone(
       .single();
 
     if (createErr || !created) {
+      // Not reachable from the webhook: its client is exempt (068, D-13).
+      const planErr = fromPostgrestError(createErr);
+      if (planErr) throw planErr;
       // Lost a race against a concurrent inbound/API create — the
       // unique index (migration 022) rejected the duplicate. Re-resolve.
       if (isUniqueViolation(createErr)) {

@@ -2,6 +2,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AiConfig } from './types'
 import { chunkText } from './chunk'
 import { embedTexts, toVectorLiteral } from './embeddings'
+import { canUseKnowledgeBase } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 // ============================================================
 // Knowledge base: ingest (chunk + optionally embed) and hybrid
@@ -96,6 +98,10 @@ export async function retrieveKnowledge(
 ): Promise<string[]> {
   const query = queryText.trim()
   if (!query || k <= 0) return []
+
+  // A plan with 0 documents doesn't retrieve them; they stay stored and
+  // are used again on upgrade (R9, AC-T5). Replies work without them.
+  if (!canUseKnowledgeBase(await getEntitlements(accountId))) return []
 
   // Skip everything when the account has no knowledge base — otherwise
   // every draft / auto-reply would pay for a query embedding + two RPCs

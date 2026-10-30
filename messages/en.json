@@ -2934,6 +2934,33 @@
       "submitFailed": "Failed to submit template.",
       "metaApiStatus": "Meta API error: {status}",
       "syncFailed": "Failed to sync templates"
+    },
+    "plan": {
+      "limitReached": "You've reached your plan's limit of {limit} {resource}.",
+      "featureUnavailable": "{resource} isn't available on your plan.",
+      "accountRestricted": "Your account is restricted, so this action is paused.",
+      "accountLocked": "Your account is locked. Choose a plan to continue.",
+      "downgradeBlocked": "Free {count} seats before changing to this plan.",
+      "workspaceFull": "This workspace is full. Ask its admin to free a seat or upgrade.",
+      "broadcastOverAllowance": "This broadcast has {requested} recipients; {remaining} remain this period (resets {date}).",
+      "meteringUnavailable": "Your plan's broadcast allowance could not be checked. Nothing was sent. Try again shortly.",
+      "resources": {
+        "seats": "seats",
+        "contacts": "contacts",
+        "broadcast_recipients": "broadcast recipients",
+        "automations_active": "active automations",
+        "automations_total": "automations",
+        "flows_active": "active flows",
+        "flows_total": "flows",
+        "api_keys": "API keys",
+        "public_api": "The public API",
+        "webhook_endpoints": "webhook endpoints",
+        "ai_auto_reply": "The AI auto-reply bot",
+        "ai_drafts": "AI drafts",
+        "kb_documents": "knowledge base documents",
+        "pipelines": "pipelines",
+        "messages": "Messaging"
+      }
     }
   }
 }

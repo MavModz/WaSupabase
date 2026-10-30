@@ -2934,6 +2934,33 @@
       "submitFailed": "Error al enviar la plantilla.",
       "metaApiStatus": "Error de la API de Meta: {status}",
       "syncFailed": "Error al sincronizar las plantillas"
+    },
+    "plan": {
+      "limitReached": "Has alcanzado el límite de tu plan: {limit} {resource}.",
+      "featureUnavailable": "{resource}: no disponible en tu plan.",
+      "accountRestricted": "Tu cuenta está restringida, así que esta acción está en pausa.",
+      "accountLocked": "Tu cuenta está bloqueada. Elige un plan para continuar.",
+      "downgradeBlocked": "Libera {count} asientos antes de cambiar a este plan.",
+      "workspaceFull": "Este espacio de trabajo está lleno. Pide a su administrador que libere un asiento o mejore el plan.",
+      "broadcastOverAllowance": "Esta difusión tiene {requested} destinatarios; quedan {remaining} en este periodo (se reinicia el {date}).",
+      "meteringUnavailable": "No se pudo comprobar el cupo de difusión de tu plan. No se envió nada. Inténtalo de nuevo en breve.",
+      "resources": {
+        "seats": "asientos",
+        "contacts": "contactos",
+        "broadcast_recipients": "destinatarios de difusión",
+        "automations_active": "automatizaciones activas",
+        "automations_total": "automatizaciones",
+        "flows_active": "flujos activos",
+        "flows_total": "flujos",
+        "api_keys": "claves de API",
+        "public_api": "La API pública",
+        "webhook_endpoints": "endpoints de webhook",
+        "ai_auto_reply": "El bot de respuesta automática con IA",
+        "ai_drafts": "Borradores con IA",
+        "kb_documents": "documentos de la base de conocimiento",
+        "pipelines": "embudos",
+        "messages": "Mensajería"
+      }
     }
   }
 }

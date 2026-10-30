@@ -14,6 +14,8 @@ import {
 import { sendTypingIndicator } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { log } from '@/lib/log'
+import { canAutoReply } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 interface DispatchArgs {
   /** Tenancy key — drives config, contact, and whatsapp_config lookups. */
@@ -60,6 +62,10 @@ export async function dispatchInboundToAiReply(
   } = args
 
   try {
+    // The inbound message is already stored (REQ-X11); only the bot stops.
+    const ent = await getEntitlements(accountId)
+    if (!canAutoReply(ent)) return
+
     const db = supabaseAdmin()
 
     const config = await loadAiConfig(db, accountId)

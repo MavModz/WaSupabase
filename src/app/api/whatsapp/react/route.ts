@@ -13,6 +13,8 @@ import {
   removeBusinessReaction,
   setBusinessReaction,
 } from '@/lib/inbox/business-reaction';
+import { assertCanSendMessage } from '@/lib/entitlements/gates';
+import { getEntitlements } from '@/lib/entitlements/resolve';
 
 const t = getT('Api');
 
@@ -32,6 +34,9 @@ export async function POST(request: Request) {
     // missing role check let a read-only viewer put a visible reaction on
     // the customer's message even though RLS blocked the local mirror.
     const { supabase, accountId, userId } = await requireRole('agent');
+
+    // A locked account can't send, reactions included (section 7).
+    assertCanSendMessage(await getEntitlements(accountId));
 
     const limit = await checkRateLimit(`react:${userId}`, RATE_LIMITS.react);
     if (!limit.success) {

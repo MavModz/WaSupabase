@@ -28,6 +28,9 @@ import {
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body';
 import type { MessageTemplate } from '@/types';
 import { findOrCreateContact } from '@/lib/api/v1/contacts';
+import { fromPostgrestError } from '@/lib/entitlements/errors';
+import { createBroadcastMeter } from '@/lib/entitlements/metering';
+import { isEntitlementsEnabled } from '@/lib/entitlements/config';
 
 /** Thrown by createBroadcast on a caller-visible failure; route maps it. */
 export class BroadcastError extends Error {
@@ -71,6 +74,11 @@ export interface BroadcastPlan {
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
   rejected: number;
+  /**
+   * Set (by {@link withBroadcastMetering}) to meter this pass against
+   * the account's plan. Unset with entitlements off.
+   */
+  meterAccountId?: string;
 }
 
 export interface CreatedBroadcastPlan extends BroadcastPlan {
@@ -78,6 +86,17 @@ export interface CreatedBroadcastPlan extends BroadcastPlan {
 }
 
 const MAX_RECIPIENTS = 1000;
+
+/** Recipients reserved per metering round trip: REQ-X5's "one batch". */
+const METER_CHUNK = 10;
+
+/** The plan to deliver: metered with entitlements on, unchanged with them off. */
+export function withBroadcastMetering<P extends BroadcastPlan>(
+  plan: P,
+  accountId: string
+): P {
+  return isEntitlementsEnabled() ? { ...plan, meterAccountId: accountId } : plan;
+}
 
 /**
  * Validate + persist a broadcast, resolving each recipient to a
@@ -221,6 +240,9 @@ export async function createBroadcast(
     }
   );
   if (createErr || !createdRows || createdRows.length === 0) {
+    // Over the remaining allowance, or a paused plan state (068 pre-flight).
+    const planErr = fromPostgrestError(createErr);
+    if (planErr) throw planErr;
     console.error('[broadcast-core] create broadcast error:', createErr);
     throw new BroadcastError('internal', 'Failed to create broadcast', 500);
   }
@@ -267,7 +289,17 @@ export async function deliverBroadcast(
   db: SupabaseClient,
   plan: BroadcastPlan
 ): Promise<void> {
-  for (const recipient of plan.planned) {
+  // Null with entitlements off: every meter call below is skipped.
+  const meter = plan.meterAccountId
+    ? createBroadcastMeter(plan.meterAccountId, METER_CHUNK)
+    : null;
+
+  for (const [index, recipient] of plan.planned.entries()) {
+    // Out of allowance, or the plan state changed mid-send: stop here.
+    // The rest stay 'pending' and Resume sends them later, counted in
+    // the period they actually go out (R3).
+    if (meter && !(await meter.take(plan.planned.length - index))) break;
+
     const variants = phoneVariants(recipient.phone);
     let sentMessageId: string | null = null;
     let lastError: string | null = null;
@@ -305,6 +337,7 @@ export async function deliverBroadcast(
         })
         .eq('id', recipient.recipientRowId);
     } else {
+      meter?.refund();
       await db
         .from('broadcast_recipients')
         .update({
@@ -312,6 +345,19 @@ export async function deliverBroadcast(
           error_message: lastError || 'Unknown error',
         })
         .eq('id', recipient.recipientRowId);
+    }
+  }
+
+  if (meter) {
+    await meter.settle();
+    if (meter.stopped) {
+      const { error } = await db
+        .from('broadcasts')
+        .update({ paused_reason: 'plan_limit' })
+        .eq('id', plan.broadcastId);
+      if (error) {
+        console.error('[broadcast-core] pause flag failed:', error.message);
+      }
     }
   }
 

@@ -27,6 +27,8 @@ import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { getT } from '@/lib/i18n/translate'
 import { isWithinTimeWindow } from './time-of-day'
 import { log } from '@/lib/log'
+import { canRunEngines } from '@/lib/entitlements/gates'
+import { getEntitlements } from '@/lib/entitlements/resolve'
 
 /** Step errors land in automation_logs and are shown on the logs page. */
 const tErr = getT('LibErrors.engine')
@@ -72,6 +74,10 @@ export interface DispatchInput {
  */
 export async function runAutomationsForTrigger(input: DispatchInput): Promise<void> {
   try {
+    // Restricted and locked accounts don't execute (R4). The automation
+    // stays active, so restoring the state resumes it with no user action.
+    if (!canRunEngines(await getEntitlements(input.accountId))) return
+
     const db = supabaseAdmin()
 
     // Tenant isolation. `contactId` can be caller-supplied (the manual
@@ -237,6 +243,10 @@ export interface AwaitingReplyInput {
 export async function resumeAwaitingReply(input: AwaitingReplyInput): Promise<boolean> {
   let claimedId: string | null = null
   try {
+    // Waits don't resume while restricted or locked (R4). The wait keeps
+    // its deadline and follows the existing expiry path.
+    if (!canRunEngines(await getEntitlements(input.accountId))) return false
+
     const db = supabaseAdmin()
     // Newest first; a park supersedes older waits, so normally there is
     // at most one. The deadline is checked here rather than trusted to

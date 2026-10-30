@@ -2934,6 +2934,33 @@
       "submitFailed": "Falha ao enviar o modelo.",
       "metaApiStatus": "Erro da API da Meta: {status}",
       "syncFailed": "Falha ao sincronizar os modelos"
+    },
+    "plan": {
+      "limitReached": "Você atingiu o limite do seu plano: {limit} {resource}.",
+      "featureUnavailable": "{resource}: indisponível no seu plano.",
+      "accountRestricted": "Sua conta está restrita, então esta ação está pausada.",
+      "accountLocked": "Sua conta está bloqueada. Escolha um plano para continuar.",
+      "downgradeBlocked": "Libere {count} assentos antes de mudar para este plano.",
+      "workspaceFull": "Este espaço de trabalho está cheio. Peça ao administrador para liberar um assento ou fazer upgrade.",
+      "broadcastOverAllowance": "Esta transmissão tem {requested} destinatários; restam {remaining} neste período (reinicia em {date}).",
+      "meteringUnavailable": "Não foi possível verificar a cota de transmissão do seu plano. Nada foi enviado. Tente novamente em instantes.",
+      "resources": {
+        "seats": "assentos",
+        "contacts": "contatos",
+        "broadcast_recipients": "destinatários de transmissão",
+        "automations_active": "automações ativas",
+        "automations_total": "automações",
+        "flows_active": "fluxos ativos",
+        "flows_total": "fluxos",
+        "api_keys": "chaves de API",
+        "public_api": "A API pública",
+        "webhook_endpoints": "endpoints de webhook",
+        "ai_auto_reply": "O bot de resposta automática com IA",
+        "ai_drafts": "Rascunhos com IA",
+        "kb_documents": "documentos da base de conhecimento",
+        "pipelines": "funis",
+        "messages": "Mensagens"
+      }
     }
   }
 }

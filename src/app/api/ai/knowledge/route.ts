@@ -9,6 +9,7 @@ import { loadEmbeddingsKey } from '@/lib/ai/config'
 import { ingestDocument, type IngestResult } from '@/lib/ai/knowledge'
 import { AiError } from '@/lib/ai/types'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -65,6 +66,8 @@ export async function POST(request: Request) {
       .insert({ account_id: accountId, created_by: userId, title, content })
       .select('id')
       .single()
+    const planRes = planErrorResponse(error)
+    if (planRes) return planRes
     if (error || !doc) {
       console.error('[ai/knowledge POST] insert error:', error)
       return NextResponse.json(

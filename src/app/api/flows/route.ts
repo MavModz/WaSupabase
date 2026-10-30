@@ -4,6 +4,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { getFlowTemplate } from '@/lib/flows/templates'
 import { getT } from '@/lib/i18n/translate'
+import { planErrorResponse } from '@/lib/entitlements/errors'
 
 const t = getT('Api')
 
@@ -124,6 +125,8 @@ export async function POST(request: Request) {
       })
       .select()
       .single()
+    const planRes = planErrorResponse(flowErr)
+    if (planRes) return planRes
     if (flowErr || !flow) {
       return NextResponse.json(
         { error: flowErr?.message ?? t('flows.insertFailed') },
@@ -172,6 +175,8 @@ export async function POST(request: Request) {
     })
     .select()
     .single()
+  const planRes = planErrorResponse(error)
+  if (planRes) return planRes
   if (error || !data) {
     return NextResponse.json(
       { error: error?.message ?? t('common.insertFailed') },
